@@ -1,0 +1,9 @@
+{
+  "name": "expert-park",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node server.mjs",
+    "check": "node --check server.mjs && node --check prompts/personas.js && node --check js/api.js && node --check js/experts.js && node --check js/main.js"
+  }
+}

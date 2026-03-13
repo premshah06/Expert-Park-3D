@@ -1,0 +1,168 @@
+<section id="inspector" class="panel inspector hidden">
+  <button id="panel-close" class="panel-close" type="button" aria-label="Close panel">
+    Close
+  </button>
+  <div class="profile-hero">
+    <div id="inspector-emblem" class="profile-emblem">EP</div>
+    <div class="profile-copy-block">
+      <p id="inspector-domain" class="eyebrow">Domain</p>
+      <h2 id="inspector-name">Select a resident</h2>
+      <p id="inspector-role" class="role-copy">Expert role</p>
+      <div id="profile-presence" class="profile-presence"></div>
+    </div>
+    <div class="profile-side">
+      <span id="inspector-distance" class="distance-chip">Explore</span>
+    </div>
+  </div>
+
+  <p id="inspector-bio" class="inspector-bio">
+    Step close to any resident, press O for the profile, and press Q when you
+    want to ask a question.
+  </p>
+
+  <div class="profile-actions">
+    <button id="focus-chat-button" class="ghost-button" type="button">
+      Ask This Expert
+    </button>
+    <div class="inline-shortcuts" aria-label="Resident shortcuts">
+      <span class="shortcut-chip compact"><kbd>Q</kbd><span>Ask</span></span>
+      <span class="shortcut-chip compact"><kbd>O</kbd><span>Info</span></span>
+    </div>
+  </div>
+
+  <div class="inspector-tabs" role="tablist" aria-label="Resident sections">
+    <button
+      id="inspector-tab-info"
+      class="inspector-tab active"
+      type="button"
+      role="tab"
+      aria-selected="true"
+      aria-controls="inspector-panel-info"
+      data-inspector-tab="info"
+    >
+      Information
+    </button>
+    <button
+      id="inspector-tab-qa"
+      class="inspector-tab"
+      type="button"
+      role="tab"
+      aria-selected="false"
+      aria-controls="inspector-panel-qa"
+      data-inspector-tab="qa"
+    >
+      Q&amp;A
+    </button>
+  </div>
+
+  <section
+    id="inspector-panel-info"
+    class="inspector-panel active"
+    role="tabpanel"
+    aria-labelledby="inspector-tab-info"
+    data-inspector-panel="info"
+  >
+    <div class="info-pillars">
+      <article class="info-pillar">
+        <span class="info-pillar-label">Signal</span>
+        <strong id="info-signal" class="info-pillar-value">Expert</strong>
+      </article>
+      <article class="info-pillar">
+        <span class="info-pillar-label">Core Domain</span>
+        <strong id="info-domain" class="info-pillar-value">Domain</strong>
+      </article>
+      <article class="info-pillar">
+        <span class="info-pillar-label">Primary Skill</span>
+        <strong id="info-primary-skill" class="info-pillar-value">Skill</strong>
+      </article>
+    </div>
+
+    <div class="section-block">
+      <h3>Strongest Pros</h3>
+      <div id="pros-grid" class="pros-grid"></div>
+    </div>
+
+    <div class="section-block signature-panel">
+      <span class="signature-label">Signature Approach</span>
+      <p id="signature-line" class="signature-line">
+        Select a resident to reveal their strongest way of thinking.
+      </p>
+    </div>
+
+    <div class="section-block">
+      <h3>Best For</h3>
+      <div id="best-fit" class="chip-row"></div>
+    </div>
+
+    <div class="section-block">
+      <h3>Expertise Stack</h3>
+      <div id="expertise-chips" class="chip-row"></div>
+    </div>
+
+    <details class="section-block prompt-drawer">
+      <summary>Prompt Blueprint</summary>
+      <div class="section-split prompt-actions">
+        <span class="helper-copy">Generated from `prompts/personas.js`.</span>
+        <button id="copy-prompt" class="ghost-button" type="button">
+          Copy
+        </button>
+      </div>
+      <pre id="prompt-preview" class="prompt-preview"></pre>
+    </details>
+  </section>
+
+  <section
+    id="inspector-panel-qa"
+    class="inspector-panel"
+    role="tabpanel"
+    aria-labelledby="inspector-tab-qa"
+    aria-hidden="true"
+    data-inspector-panel="qa"
+  >
+    <div class="qa-shell">
+      <div class="qa-hero">
+        <div class="qa-copy">
+          <span class="qa-kicker">Integrated Expert Chat</span>
+          <h3 class="qa-title">Ask clearly. Get an answer fast.</h3>
+          <p id="qa-guidance" class="qa-guidance">
+            Use a starter question or write a direct question below.
+          </p>
+        </div>
+        <div class="qa-status-row">
+          <span id="runtime-status" class="runtime-pill">Integrated local prototype</span>
+          <span class="memory-pill">Short memory</span>
+        </div>
+      </div>
+
+      <div class="section-block qa-starters">
+        <div class="qa-card-head">
+          <h3>Starter Questions</h3>
+          <span class="helper-copy">Tap once to ask instantly.</span>
+        </div>
+        <div id="starter-questions" class="starter-grid"></div>
+      </div>
+
+      <div class="section-block qa-chat-card">
+        <div class="qa-card-head">
+          <h3>Conversation</h3>
+          <span class="helper-copy">Specific questions get better answers.</span>
+        </div>
+        <div id="conversation-feed" class="conversation-feed"></div>
+        <form id="chat-form" class="chat-form">
+          <label class="chat-label" for="chat-input">Your question</label>
+          <textarea
+            id="chat-input"
+            name="question"
+            rows="3"
+            placeholder="Ask this expert about their domain..."
+            autocomplete="off"
+          ></textarea>
+          <div class="chat-form-footer">
+            <span class="chat-tip">Press Enter to send. Shift + Enter for a new line.</span>
+            <button type="submit">Send question</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </section>
+</section>

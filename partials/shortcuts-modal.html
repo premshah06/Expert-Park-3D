@@ -1,0 +1,61 @@
+<button
+  id="shortcuts-button"
+  class="panel shortcuts-fab"
+  type="button"
+  aria-haspopup="dialog"
+  aria-controls="shortcuts-modal"
+>
+  <span class="shortcuts-fab-icon" aria-hidden="true">
+    <svg viewBox="0 0 24 24" class="shortcuts-fab-svg" focusable="false" aria-hidden="true">
+      <rect x="3" y="6" width="18" height="12" rx="3"></rect>
+      <path d="M7 10h2M11 10h2M15 10h2M7 13h10"></path>
+    </svg>
+  </span>
+  <span class="shortcuts-fab-label">Keys</span>
+</button>
+
+<div id="shortcuts-modal" class="shortcuts-modal hidden" aria-hidden="true">
+  <div id="shortcuts-backdrop" class="shortcuts-backdrop"></div>
+  <section class="panel shortcuts-dialog" role="dialog" aria-modal="true" aria-labelledby="shortcuts-title">
+    <button id="shortcuts-close" class="panel-close shortcuts-close" type="button" aria-label="Close shortcuts">
+      Close
+    </button>
+    <p class="eyebrow">Control Guide</p>
+    <h2 id="shortcuts-title">Keyboard Shortcuts</h2>
+    <p class="lede compact">
+      Use this quick key map whenever you need to move, inspect a resident, or open conversation faster.
+    </p>
+
+    <div class="shortcuts-groups">
+      <article class="shortcuts-group">
+        <span class="shortcuts-group-label">Movement</span>
+        <div class="shortcut-strip" aria-label="Movement shortcuts">
+          <span class="shortcut-chip"><kbd>S</kbd><span>Forward</span></span>
+          <span class="shortcut-chip"><kbd>W</kbd><span>Backward</span></span>
+          <span class="shortcut-chip"><kbd>A</kbd><span>Left</span></span>
+          <span class="shortcut-chip"><kbd>D</kbd><span>Right</span></span>
+          <span class="shortcut-chip"><kbd>Shift</kbd><span>Run</span></span>
+          <span class="shortcut-chip"><kbd>Space</kbd><span>Jump</span></span>
+        </div>
+      </article>
+
+      <article class="shortcuts-group">
+        <span class="shortcuts-group-label">Interaction</span>
+        <div class="shortcut-strip" aria-label="Interaction shortcuts">
+          <span class="shortcut-chip"><kbd>O</kbd><span>Open info</span></span>
+          <span class="shortcut-chip"><kbd>Q</kbd><span>Ask question</span></span>
+          <span class="shortcut-chip"><kbd>R</kbd><span>Residents</span></span>
+          <span class="shortcut-chip"><kbd>I</kbd><span>Overview</span></span>
+        </div>
+      </article>
+
+      <article class="shortcuts-group">
+        <span class="shortcuts-group-label">System</span>
+        <div class="shortcut-strip" aria-label="System shortcuts">
+          <span class="shortcut-chip"><kbd>Esc</kbd><span>Release cursor</span></span>
+          <span class="shortcut-chip"><kbd>Click</kbd><span>Enter park</span></span>
+        </div>
+      </article>
+    </div>
+  </section>
+</div>
