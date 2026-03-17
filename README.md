@@ -5,7 +5,6 @@ Expert Park is a static 3D prototype for the concept you described: a visually r
 ## Project demo
 
 <video src="./i.mp4" controls playsinline preload="metadata">
-  Your browser does not support the video tag.
 </video>
 
 [Open the project demo video](./i.mp4)
