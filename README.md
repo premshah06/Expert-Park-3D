@@ -2,6 +2,14 @@
 
 Expert Park is a static 3D prototype for the concept you described: a visually rich park where expert residents stand in-world, advertise their names above their heads, expose their domain expertise through expandable UI, and let users ask domain-specific questions.
 
+## Project demo
+
+<video src="./i.mp4" controls playsinline preload="metadata">
+  Your browser does not support the video tag.
+</video>
+
+[Open the project demo video](./i.mp4)
+
 ## What is included
 
 - A stylized 3D park scene built with Three.js loaded from a CDN

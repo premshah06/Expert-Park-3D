@@ -1221,105 +1221,105 @@ function createResidentAvatar(expert) {
   bodyPivot.add(headPivot);
 
   const head = new THREE.Mesh(
-    new THREE.SphereGeometry(0.29, 22, 18),
+    new THREE.SphereGeometry(0.29, 24, 20),
     skinMaterial
   );
-  head.scale.set(0.94, 1.04, 0.90);
+  head.scale.set(0.98, 1.02, 0.94);
   head.position.y = 0.34;
   headPivot.add(head);
 
   const facePlane = new THREE.Mesh(
-    new THREE.SphereGeometry(0.24, 18, 16),
+    new THREE.SphereGeometry(0.25, 20, 18),
     faceMaterial
   );
-  facePlane.scale.set(0.84, 0.98, 0.44);
-  facePlane.position.set(0, 0.30, 0.16);
+  facePlane.scale.set(0.86, 0.96, 0.46);
+  facePlane.position.set(0, 0.29, 0.16);
   headPivot.add(facePlane);
 
   const jaw = new THREE.Mesh(
-    new THREE.SphereGeometry(0.16, 16, 12),
+    new THREE.SphereGeometry(0.16, 16, 14),
     faceMaterial
   );
-  jaw.scale.set(1.0, 0.56, 0.52);
-  jaw.position.set(0, 0.19, 0.06);
+  jaw.scale.set(0.94, 0.52, 0.58);
+  jaw.position.set(0, 0.19, 0.10);
   headPivot.add(jaw);
 
-  [-0.11, 0.11].forEach((x) => {
+  [-0.10, 0.10].forEach((x) => {
     const cheek = new THREE.Mesh(
-      new THREE.SphereGeometry(0.06, 10, 10),
+      new THREE.SphereGeometry(0.055, 12, 10),
       cheekMaterial
     );
-    cheek.scale.set(1.0, 0.72, 0.38);
-    cheek.position.set(x, 0.27, 0.19);
+    cheek.scale.set(0.96, 0.68, 0.42);
+    cheek.position.set(x, 0.27, 0.20);
     headPivot.add(cheek);
   });
 
-  [-0.26, 0.26].forEach((x) => {
+  [-0.25, 0.25].forEach((x) => {
     const ear = new THREE.Mesh(
-      new THREE.SphereGeometry(0.05, 10, 10),
+      new THREE.SphereGeometry(0.046, 10, 10),
       skinMaterial
     );
-    ear.scale.set(0.66, 0.96, 0.54);
-    ear.position.set(x, 0.34, 0.02);
+    ear.scale.set(0.60, 0.88, 0.48);
+    ear.position.set(x, 0.34, 0.0);
     headPivot.add(ear);
   });
 
   [-0.09, 0.09].forEach((x) => {
     const eyeWhite = new THREE.Mesh(
-      new THREE.SphereGeometry(0.048, 14, 12),
+      new THREE.SphereGeometry(0.046, 14, 12),
       eyeWhiteMaterial
     );
-    eyeWhite.scale.set(1.1, 0.78, 0.36);
-    eyeWhite.position.set(x, 0.365, 0.245);
+    eyeWhite.scale.set(1.06, 0.82, 0.42);
+    eyeWhite.position.set(x, 0.36, 0.244);
     headPivot.add(eyeWhite);
 
     const iris = new THREE.Mesh(
-      new THREE.SphereGeometry(0.022, 12, 10),
+      new THREE.SphereGeometry(0.024, 12, 10),
       eyeMaterial
     );
-    iris.scale.set(1, 1, 0.44);
-    iris.position.set(x, 0.364, 0.268);
+    iris.scale.set(1, 1, 0.48);
+    iris.position.set(x, 0.36, 0.265);
     headPivot.add(iris);
 
     const pupil = new THREE.Mesh(
-      new THREE.SphereGeometry(0.011, 10, 10),
+      new THREE.SphereGeometry(0.012, 10, 10),
       trimMaterial
     );
-    pupil.scale.set(1, 1, 0.38);
-    pupil.position.set(x, 0.364, 0.280);
+    pupil.scale.set(1, 1, 0.42);
+    pupil.position.set(x, 0.36, 0.277);
     headPivot.add(pupil);
 
     const brow = new THREE.Mesh(
-      new THREE.BoxGeometry(0.088, 0.016, 0.02),
+      new THREE.BoxGeometry(0.080, 0.014, 0.018),
       trimMaterial
     );
-    brow.position.set(x, 0.425, 0.230);
-    brow.rotation.z = x < 0 ? 0.14 : -0.14;
+    brow.position.set(x, 0.418, 0.228);
+    brow.rotation.z = x < 0 ? 0.12 : -0.12;
     headPivot.add(brow);
   });
 
   const nose = new THREE.Mesh(
-    new THREE.SphereGeometry(0.04, 14, 12),
+    new THREE.SphereGeometry(0.036, 14, 12),
     faceMaterial
   );
-  nose.scale.set(0.68, 0.96, 0.52);
-  nose.position.set(0, 0.29, 0.23);
+  nose.scale.set(0.62, 0.86, 0.52);
+  nose.position.set(0, 0.29, 0.24);
   headPivot.add(nose);
 
   const mouth = new THREE.Mesh(
-    new THREE.CapsuleGeometry(0.01, 0.054, 4, 8),
+    new THREE.CapsuleGeometry(0.009, 0.048, 4, 8),
     lipMaterial
   );
   mouth.rotation.z = Math.PI / 2;
-  mouth.position.set(0, 0.215, 0.225);
+  mouth.position.set(0, 0.22, 0.224);
   headPivot.add(mouth);
 
   const lowerLip = new THREE.Mesh(
-    new THREE.SphereGeometry(0.032, 10, 10),
+    new THREE.SphereGeometry(0.028, 10, 10),
     lipMaterial
   );
-  lowerLip.scale.set(1.22, 0.34, 0.30);
-  lowerLip.position.set(0, 0.200, 0.218);
+  lowerLip.scale.set(1.16, 0.32, 0.28);
+  lowerLip.position.set(0, 0.206, 0.216);
   headPivot.add(lowerLip);
 
   addHumanHair(headPivot, appearance.hairStyle, hairMaterial, accentMaterial);
@@ -1423,11 +1423,11 @@ function createResidentBeacon(color) {
 
 function addHumanHair(headPivot, hairStyle, hairMaterial, accentMaterial) {
   const cap = new THREE.Mesh(
-    new THREE.SphereGeometry(0.3, 20, 16, 0, Math.PI * 2, 0, Math.PI * 0.62),
+    new THREE.SphereGeometry(0.3, 24, 18, 0, Math.PI * 2, 0, Math.PI * 0.60),
     hairMaterial
   );
-  cap.scale.set(1.02, 0.92, 1.04);
-  cap.position.set(0, 0.5, -0.01);
+  cap.scale.set(1.02, 0.94, 1.02);
+  cap.position.set(0, 0.49, 0.0);
   headPivot.add(cap);
 
   if (hairStyle === "parted") {
@@ -1519,11 +1519,11 @@ function addHumanHair(headPivot, hairStyle, hairMaterial, accentMaterial) {
   if (hairStyle === "soft") {
     [-0.13, 0, 0.13].forEach((x) => {
       const fringe = new THREE.Mesh(
-        new THREE.SphereGeometry(0.075, 12, 10),
+        new THREE.SphereGeometry(0.078, 12, 10),
         hairMaterial
       );
-      fringe.scale.set(1.18, 0.72, 0.82);
-      fringe.position.set(x, 0.51 - Math.abs(x) * 0.08, 0.18);
+      fringe.scale.set(1.16, 0.70, 0.84);
+      fringe.position.set(x, 0.50 - Math.abs(x) * 0.07, 0.17);
       headPivot.add(fringe);
     });
   }

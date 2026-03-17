@@ -1,7 +1,7 @@
 export const experts = [
   {
-    id: "aira",
-    name: "AIRA-7 Cortex",
+    id: "zv",
+    name: "ZV-9",
     role: "AI Systems Architect",
     domain: "Agents and Knowledge Systems",
     signal: "AI",
@@ -73,8 +73,8 @@ export const experts = [
     ]
   },
   {
-    id: "mateo",
-    name: "MATEO-UX Prism",
+    id: "kl",
+    name: "KL-7",
     role: "Spatial UX Designer",
     domain: "Immersive Interface Design",
     signal: "UX",
@@ -146,8 +146,8 @@ export const experts = [
     ]
   },
   {
-    id: "idris",
-    name: "IDRIS-X Vector",
+    id: "tq",
+    name: "TQ-4",
     role: "Motion Physics Engineer",
     domain: "Camera and Movement Systems",
     signal: "Motion",
@@ -219,8 +219,8 @@ export const experts = [
     ]
   },
   {
-    id: "nadia",
-    name: "NADIA-Link Pulse",
+    id: "sn",
+    name: "SN-2",
     role: "Community Experience Lead",
     domain: "Social Interaction Design",
     signal: "Social",
@@ -292,8 +292,8 @@ export const experts = [
     ]
   },
   {
-    id: "rhea",
-    name: "RHEA Prompt-Core",
+    id: "vx",
+    name: "VX-5",
     role: "Knowledge Design Mentor",
     domain: "Domain Prompt Engineering",
     signal: "Prompt",
@@ -365,8 +365,8 @@ export const experts = [
     ]
   },
   {
-    id: "owen",
-    name: "OWEN Forge-01",
+    id: "cl",
+    name: "CL-1",
     role: "Rapid Prototype Builder",
     domain: "Product Engineering",
     signal: "Build",
