@@ -1,5 +1,5 @@
 import * as THREE from "https://cdn.jsdelivr.net/npm/three@0.161.0/build/three.module.js";
-import { askExpertQuestion, getRuntimeConfig } from "./api.js";
+import { askExpertQuestionStream, getRuntimeConfig } from "./api.js";
 import { buildOutOfScopeAnswer, finalizeExpertAnswer, isQuestionInScope } from "./expert-response.js";
 import { experts, technologyStack } from "./experts.js";
 import { buildPersonaPrompt } from "../prompts/personas.js";
@@ -32,6 +32,32 @@ const skyHorizonGlow = new THREE.Color("#fff0d2");
 const skyGlowBase = new THREE.Color("#f3c78b");
 const skyGlowLift = new THREE.Color("#ffd7a6");
 
+// Night palette — everything lerps toward these as state.nightMix approaches 1
+const skyTopNight = new THREE.Color("#0b1424");
+const skyHorizonNight = new THREE.Color("#1a2740");
+const skyGlowNight = new THREE.Color("#3d517e");
+const fogDayColor = new THREE.Color("#cce0d8");
+const fogNightColor = new THREE.Color("#0e1826");
+const hemiSkyDay = new THREE.Color("#edf8e0");
+const hemiSkyNight = new THREE.Color("#26344e");
+const hemiGroundDay = new THREE.Color("#7aaa82");
+const hemiGroundNight = new THREE.Color("#131c2c");
+const sunDayColor = new THREE.Color("#fff6d6");
+const moonColor = new THREE.Color("#b7c8ee");
+
+// Scene handles the day/night system needs to reach every frame
+const environment = {
+  hemi: null,
+  sun: null,
+  fill: null,
+  lanternBulbs: [],
+  lanternGlows: [],
+  firefliesMaterial: null,
+  cloudMaterial: null,
+  starsMaterial: null,
+  stars: null
+};
+
 const state = {
   pointerLocked: false,
   hasEnteredPark: false,
@@ -47,6 +73,8 @@ const state = {
   residentSignal: "all",
   autoTourAngle: 0.1,
   currentTime: 0,
+  nightMix: 0,
+  nightTarget: 0,
   chatHistory: new Map(),
   sky: {
     dome: null,
@@ -110,8 +138,10 @@ const promptPreview = document.getElementById("prompt-preview");
 const copyPromptButton = document.getElementById("copy-prompt");
 const panelCloseButton = document.getElementById("panel-close");
 const focusChatButton = document.getElementById("focus-chat-button");
+const qaTitle = document.getElementById("qa-title");
 const chatForm = document.getElementById("chat-form");
 const chatInput = document.getElementById("chat-input");
+const sendButton = document.getElementById("send-button");
 const unlockButton = document.getElementById("unlock-button");
 const shortcutsModal = document.getElementById("shortcuts-modal");
 const shortcutsBackdrop = document.getElementById("shortcuts-backdrop");
@@ -120,6 +150,9 @@ const lockOverlay = document.getElementById("lock-overlay");
 const overlayButton = document.getElementById("overlay-button");
 const inspectorTabs = Array.from(document.querySelectorAll("[data-inspector-tab]"));
 const inspectorPanels = Array.from(document.querySelectorAll("[data-inspector-panel]"));
+const nightButton = document.getElementById("menu-night");
+const minimapCanvas = document.getElementById("minimap");
+const minimapContext = minimapCanvas ? minimapCanvas.getContext("2d") : null;
 
 const renderer = new THREE.WebGLRenderer({
   canvas,
@@ -127,17 +160,17 @@ const renderer = new THREE.WebGLRenderer({
   alpha: true,
   powerPreference: "high-performance"
 });
-renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.25));
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
 renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.shadowMap.enabled = true;
-renderer.shadowMap.type = THREE.PCFShadowMap;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 renderer.outputColorSpace = THREE.SRGBColorSpace;
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
-renderer.toneMappingExposure = 1.12;
+renderer.toneMappingExposure = 1.22;
 
 const scene = new THREE.Scene();
-scene.background = new THREE.Color("#c8deea");
-scene.fog = new THREE.Fog("#d9e7df", 22, 86);
+scene.background = new THREE.Color("#b8d4e6");
+scene.fog = new THREE.FogExp2("#cce0d8", 0.016);
 
 const camera = new THREE.PerspectiveCamera(78, window.innerWidth / window.innerHeight, 0.1, 120);
 camera.rotation.order = "YXZ";
@@ -147,6 +180,9 @@ const cameraForward = new THREE.Vector3();
 const tempVector = new THREE.Vector3();
 const tempDirection = new THREE.Vector3();
 const npcMap = new Map();
+// Declared before the first animate() call — updateEmotes runs every frame
+const activeEmotes = [];
+const emoteTextureCache = new Map();
 
 if (isTouchDevice) {
   lockOverlay.classList.add("hidden");
@@ -165,14 +201,31 @@ attachEvents();
 void loadRuntimeConfig();
 animate();
 
+// Dev-only hook for automated screenshots/debugging (harmless in production)
+window.__park = { state, camera, npcMap };
+
+// Pulse the Enter Park button 3 times on first load to draw attention
+if (!isTouchDevice && unlockButton) {
+  unlockButton.classList.add("pulse");
+  unlockButton.addEventListener("animationend", () => {
+    unlockButton.classList.remove("pulse");
+  }, { once: true });
+}
+
 function buildScene() {
   addSkyBackdrop();
 
-  const hemiLight = new THREE.HemisphereLight("#f8ffe6", "#6e9875", 1.1);
+  const hemiLight = new THREE.HemisphereLight("#edf8e0", "#7aaa82", 1.4);
   hemiLight.position.set(0, 20, 0);
   scene.add(hemiLight);
+  environment.hemi = hemiLight;
 
-  const sun = new THREE.DirectionalLight("#fff4d0", 2.5);
+  const fillLight = new THREE.DirectionalLight("#c8e8f0", 0.55);
+  fillLight.position.set(-12, 14, -8);
+  scene.add(fillLight);
+  environment.fill = fillLight;
+
+  const sun = new THREE.DirectionalLight("#fff6d6", 2.2);
   sun.position.set(18, 24, 10);
   sun.castShadow = true;
   sun.shadow.mapSize.set(1024, 1024);
@@ -184,26 +237,36 @@ function buildScene() {
   sun.shadow.camera.bottom = -28;
   sun.shadow.bias = -0.00025;
   scene.add(sun);
+  environment.sun = sun;
 
   const parkBase = new THREE.Mesh(
-    new THREE.CylinderGeometry(worldRadius, worldRadius, 0.5, 80),
-    new THREE.MeshStandardMaterial({ color: "#6f9f67", roughness: 0.95 })
+    new THREE.CylinderGeometry(worldRadius, worldRadius + 0.3, 0.5, 96),
+    new THREE.MeshStandardMaterial({ color: "#5e9458", roughness: 0.98 })
   );
   parkBase.position.y = -0.3;
   parkBase.receiveShadow = true;
   scene.add(parkBase);
 
   const grassDisk = new THREE.Mesh(
-    new THREE.CircleGeometry(worldRadius - 0.2, 80),
-    new THREE.MeshStandardMaterial({ color: "#7faf76", roughness: 1 })
+    new THREE.CircleGeometry(worldRadius - 0.2, 96),
+    new THREE.MeshStandardMaterial({ color: "#79a96e", roughness: 0.98 })
   );
   grassDisk.rotation.x = -Math.PI / 2;
   grassDisk.receiveShadow = true;
   scene.add(grassDisk);
 
+  // Inner grass ring — slightly lighter to create depth
+  const innerGrass = new THREE.Mesh(
+    new THREE.RingGeometry(0, 10, 72),
+    new THREE.MeshStandardMaterial({ color: "#87b87b", roughness: 0.96, side: THREE.DoubleSide })
+  );
+  innerGrass.rotation.x = -Math.PI / 2;
+  innerGrass.position.y = 0.005;
+  scene.add(innerGrass);
+
   const ringPath = new THREE.Mesh(
-    new THREE.RingGeometry(12, 16.4, 80),
-    new THREE.MeshStandardMaterial({ color: "#d7c29a", roughness: 1, side: THREE.DoubleSide })
+    new THREE.RingGeometry(12, 16.4, 96),
+    new THREE.MeshStandardMaterial({ color: "#cdb888", roughness: 0.92, side: THREE.DoubleSide })
   );
   ringPath.rotation.x = -Math.PI / 2;
   ringPath.position.y = 0.01;
@@ -224,12 +287,16 @@ function buildScene() {
   scene.add(fountainBase);
 
   const fountainWater = new THREE.Mesh(
-    new THREE.CylinderGeometry(2.35, 2.45, 0.24, 36),
+    new THREE.CylinderGeometry(2.35, 2.45, 0.24, 52),
     new THREE.MeshPhysicalMaterial({
-      color: "#7fc4c5",
-      roughness: 0.1,
-      transmission: 0.25,
-      clearcoat: 0.9
+      color: "#5bbfbc",
+      roughness: 0.04,
+      metalness: 0.06,
+      transmission: 0.48,
+      clearcoat: 1.0,
+      clearcoatRoughness: 0.04,
+      transparent: true,
+      opacity: 0.88
     })
   );
   fountainWater.position.y = 0.88;
@@ -240,8 +307,17 @@ function buildScene() {
   scene.add(fountainGlow);
 
   const pond = new THREE.Mesh(
-    new THREE.CylinderGeometry(4.2, 4.6, 0.5, 42),
-    new THREE.MeshStandardMaterial({ color: "#a8d8d5", roughness: 0.18, metalness: 0.04 })
+    new THREE.CylinderGeometry(4.2, 4.6, 0.5, 52),
+    new THREE.MeshPhysicalMaterial({
+      color: "#5bbfbc",
+      roughness: 0.04,
+      metalness: 0.06,
+      transmission: 0.38,
+      clearcoat: 1.0,
+      clearcoatRoughness: 0.04,
+      transparent: true,
+      opacity: 0.82
+    })
   );
   pond.position.set(-7.8, 0.15, 4.6);
   pond.receiveShadow = true;
@@ -263,6 +339,7 @@ function buildScene() {
   addLanterns();
   addPergola();
   addFireflies();
+  addStars();
 }
 
 function addSkyBackdrop() {
@@ -316,7 +393,7 @@ function addSkyBackdrop() {
 
   for (let index = 0; index < 18; index += 1) {
     const mountain = new THREE.Mesh(
-      new THREE.ConeGeometry(2.8 + Math.random() * 3.2, 10 + Math.random() * 8, 6),
+      new THREE.ConeGeometry(2.8 + Math.random() * 3.2, 10 + Math.random() * 8, 16),
       mountainMaterial
     );
     const angle = (index / 18) * Math.PI * 2;
@@ -335,13 +412,14 @@ function addSkyBackdrop() {
     roughness: 1,
     depthWrite: false
   });
+  environment.cloudMaterial = cloudMaterial;
 
   for (let index = 0; index < 11; index += 1) {
     const cloud = new THREE.Group();
     const puffCount = 3 + Math.floor(Math.random() * 2);
     for (let puffIndex = 0; puffIndex < puffCount; puffIndex += 1) {
       const puff = new THREE.Mesh(
-        new THREE.SphereGeometry(1.2 + Math.random() * 0.7, 10, 10),
+        new THREE.SphereGeometry(1.2 + Math.random() * 0.7, 18, 16),
         cloudMaterial
       );
       puff.position.set(
@@ -380,6 +458,11 @@ function updateSkyBackdrop() {
   horizonColor.copy(skyHorizonBase).lerp(skyHorizonGlow, horizonWarmth * 0.48);
   glowColor.copy(skyGlowBase).lerp(skyGlowLift, horizonWarmth * 0.4);
 
+  // Night overrides the daytime drift entirely as nightMix approaches 1
+  topColor.lerp(skyTopNight, state.nightMix);
+  horizonColor.lerp(skyHorizonNight, state.nightMix);
+  glowColor.lerp(skyGlowNight, state.nightMix);
+
   if (state.sky.dome) {
     state.sky.dome.position.copy(state.player.position);
   }
@@ -398,7 +481,7 @@ function updateSkyBackdrop() {
 function addPathStrip(x, z, rotationY, length, width) {
   const strip = new THREE.Mesh(
     new THREE.BoxGeometry(width, 0.06, length),
-    new THREE.MeshStandardMaterial({ color: "#d7c29a", roughness: 1 })
+    new THREE.MeshStandardMaterial({ color: "#cdb888", roughness: 0.9 })
   );
   strip.position.set(x, 0.03, z);
   strip.rotation.y = rotationY;
@@ -425,24 +508,30 @@ function scatterTrees() {
   treePositions.forEach(([x, z, scale]) => {
     const tree = new THREE.Group();
     const trunk = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.38 * scale, 0.52 * scale, 3.8 * scale, 8),
-      new THREE.MeshStandardMaterial({ color: "#7d5b3f", roughness: 1 })
+      new THREE.CylinderGeometry(0.28 * scale, 0.46 * scale, 3.6 * scale, 14),
+      new THREE.MeshStandardMaterial({ color: "#7d5b3f", roughness: 0.98 })
     );
-    trunk.position.y = 1.9 * scale;
+    trunk.position.y = 1.8 * scale;
     trunk.castShadow = true;
     tree.add(trunk);
 
-    const leafColors = ["#93ba7f", "#7ea767", "#a5c77f"];
-    [
-      { y: 4.5, r: 1.8 },
-      { y: 5.8, r: 1.5 },
-      { y: 6.8, r: 1.1 }
-    ].forEach((layer, index) => {
+    const leafPalette = ["#8ab872", "#7ea767", "#a5c77f", "#93ba7f", "#6fa05c"];
+    const clusters = [
+      { y: 4.2, r: 1.9, ox: 0,    oz: 0 },
+      { y: 5.0, r: 1.65, ox: 0.4,  oz: -0.2 },
+      { y: 4.8, r: 1.55, ox: -0.45, oz: 0.3 },
+      { y: 5.8, r: 1.4, ox: 0.2,  oz: 0.25 },
+      { y: 6.4, r: 1.2, ox: -0.15, oz: -0.1 },
+      { y: 7.0, r: 0.9, ox: 0.1,  oz: 0.1 }
+    ];
+    clusters.forEach((c, i) => {
       const crown = new THREE.Mesh(
-        new THREE.ConeGeometry(layer.r * scale, 2.6 * scale, 7),
-        new THREE.MeshStandardMaterial({ color: leafColors[index], roughness: 1 })
+        new THREE.SphereGeometry(c.r * scale, 14, 12),
+        new THREE.MeshStandardMaterial({ color: leafPalette[i % leafPalette.length], roughness: 0.98 })
       );
-      crown.position.y = layer.y * scale;
+      crown.scale.set(1, 0.82 + Math.random() * 0.14, 1);
+      crown.position.set(c.ox * scale, c.y * scale, c.oz * scale);
+      crown.castShadow = true;
       tree.add(crown);
     });
 
@@ -499,8 +588,8 @@ function scatterShrubs() {
 
     colors.forEach((color, index) => {
       const blob = new THREE.Mesh(
-        new THREE.SphereGeometry((0.55 - index * 0.08) * scale, 8, 8),
-        new THREE.MeshStandardMaterial({ color, roughness: 1 })
+        new THREE.SphereGeometry((0.55 - index * 0.08) * scale, 16, 14),
+        new THREE.MeshStandardMaterial({ color, roughness: 0.96 })
       );
       blob.position.set((index - 1) * 0.38 * scale, 0.45 + index * 0.05, (Math.abs(index - 1) * 0.12) * scale);
       blob.scale.set(1.15, 0.9, 1);
@@ -523,22 +612,29 @@ function addBenches() {
   benchPositions.forEach(([x, z, rotationY]) => {
     const bench = new THREE.Group();
 
-    const seat = new THREE.Mesh(
-      new THREE.BoxGeometry(2.4, 0.18, 0.75),
+    const seatMesh = new THREE.Mesh(
+      new THREE.CapsuleGeometry(0.36, 1.66, 6, 14),
       new THREE.MeshStandardMaterial({ color: "#7e5f42", roughness: 0.8 })
     );
-    seat.position.y = 0.7;
-    seat.castShadow = true;
-    bench.add(seat);
+    seatMesh.rotation.z = Math.PI / 2;
+    seatMesh.scale.set(1, 0.24, 1.05);
+    const seatGroup = new THREE.Group();
+    seatGroup.position.y = 0.7;
+    seatGroup.castShadow = true;
+    seatGroup.add(seatMesh);
+    bench.add(seatGroup);
 
-    const back = new THREE.Mesh(
-      new THREE.BoxGeometry(2.4, 0.18, 0.7),
+    const backMesh = new THREE.Mesh(
+      new THREE.CapsuleGeometry(0.34, 1.66, 6, 14),
       new THREE.MeshStandardMaterial({ color: "#8b694a", roughness: 0.8 })
     );
-    back.position.set(0, 1.2, -0.28);
-    back.rotation.x = -0.22;
-    back.castShadow = true;
-    bench.add(back);
+    backMesh.rotation.z = Math.PI / 2;
+    backMesh.scale.set(1, 0.22, 0.9);
+    const backGroup = new THREE.Group();
+    backGroup.position.set(0, 1.2, -0.28);
+    backGroup.rotation.x = -0.22;
+    backGroup.add(backMesh);
+    bench.add(backGroup);
 
     [
       [-0.95, 0.32],
@@ -547,8 +643,8 @@ function addBenches() {
       [0.95, -0.32]
     ].forEach(([px, pz]) => {
       const leg = new THREE.Mesh(
-        new THREE.BoxGeometry(0.12, 0.7, 0.12),
-        new THREE.MeshStandardMaterial({ color: "#4f4b46", roughness: 1 })
+        new THREE.CylinderGeometry(0.055, 0.065, 0.7, 10),
+        new THREE.MeshStandardMaterial({ color: "#4f4b46", roughness: 0.92 })
       );
       leg.position.set(px, 0.34, pz);
       leg.castShadow = true;
@@ -592,22 +688,24 @@ function addGardenChairs() {
     ].forEach(({ angle, tilt }) => {
       const chair = new THREE.Group();
 
-      const seat = new THREE.Mesh(
-        new THREE.BoxGeometry(0.52, 0.08, 0.52),
+      const seatPad = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.29, 0.3, 0.08, 20),
         new THREE.MeshStandardMaterial({ color: "#8f6d4d", roughness: 0.84 })
       );
-      seat.position.y = 0.46;
-      seat.castShadow = true;
-      chair.add(seat);
+      seatPad.position.y = 0.46;
+      seatPad.castShadow = true;
+      chair.add(seatPad);
 
-      const back = new THREE.Mesh(
-        new THREE.BoxGeometry(0.52, 0.5, 0.08),
+      const backMesh = new THREE.Mesh(
+        new THREE.CapsuleGeometry(0.22, 0.34, 6, 14),
         new THREE.MeshStandardMaterial({ color: "#9b7856", roughness: 0.84 })
       );
-      back.position.set(0, 0.72, -0.22);
-      back.rotation.x = tilt;
-      back.castShadow = true;
-      chair.add(back);
+      backMesh.scale.set(1, 1, 0.16);
+      const backGroup = new THREE.Group();
+      backGroup.position.set(0, 0.72, -0.22);
+      backGroup.rotation.x = tilt;
+      backGroup.add(backMesh);
+      chair.add(backGroup);
 
       [
         [-0.2, -0.2],
@@ -640,7 +738,11 @@ function addLanterns() {
     [4.5, -4.5],
     [-4.8, 4.8],
     [13.4, 12.2],
-    [-15.6, -11.4]
+    [-15.6, -11.4],
+    [13.8, 1.8],
+    [-13.8, -1.8],
+    [1.8, -13.8],
+    [-1.8, 13.8]
   ];
 
   lanternPositions.forEach(([x, z]) => {
@@ -667,6 +769,9 @@ function addLanterns() {
     const glow = new THREE.PointLight("#ffd898", 1.4, 10, 2.4);
     glow.position.y = 4.2;
     lantern.add(glow);
+
+    environment.lanternBulbs.push(bulb.material);
+    environment.lanternGlows.push(glow);
 
     lantern.position.set(x, 0, z);
     scene.add(lantern);
@@ -737,6 +842,242 @@ function addFireflies() {
     })
   );
   scene.add(sparks);
+  environment.firefliesMaterial = sparks.material;
+}
+
+function addStars() {
+  const geometry = new THREE.BufferGeometry();
+  const count = 260;
+  const positions = new Float32Array(count * 3);
+  for (let index = 0; index < count; index += 1) {
+    // Random points on the upper hemisphere of a large dome
+    const azimuth = Math.random() * Math.PI * 2;
+    const elevation = Math.asin(Math.random() * 0.92 + 0.08);
+    const radius = 92;
+    positions[index * 3] = Math.cos(azimuth) * Math.cos(elevation) * radius;
+    positions[index * 3 + 1] = Math.sin(elevation) * radius;
+    positions[index * 3 + 2] = Math.sin(azimuth) * Math.cos(elevation) * radius;
+  }
+  geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+
+  const stars = new THREE.Points(
+    geometry,
+    new THREE.PointsMaterial({
+      color: "#e8f0ff",
+      size: 0.9,
+      map: createSoftParticleTexture(),
+      transparent: true,
+      opacity: 0,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending
+    })
+  );
+  scene.add(stars);
+  environment.stars = stars;
+  environment.starsMaterial = stars.material;
+}
+
+// Smoothly blends every registered light/material between day and night.
+// Runs every frame; nightMix eases toward nightTarget (set by the HUD toggle).
+function updateEnvironment(dt) {
+  state.nightMix = THREE.MathUtils.lerp(state.nightMix, state.nightTarget, dt * 1.6);
+  const n = state.nightMix;
+
+  if (environment.hemi) {
+    environment.hemi.intensity = THREE.MathUtils.lerp(1.4, 0.5, n);
+    environment.hemi.color.copy(hemiSkyDay).lerp(hemiSkyNight, n);
+    environment.hemi.groundColor.copy(hemiGroundDay).lerp(hemiGroundNight, n);
+  }
+  if (environment.sun) {
+    environment.sun.intensity = THREE.MathUtils.lerp(2.2, 0.4, n);
+    environment.sun.color.copy(sunDayColor).lerp(moonColor, n);
+  }
+  if (environment.fill) {
+    environment.fill.intensity = THREE.MathUtils.lerp(0.55, 0.16, n);
+  }
+
+  scene.fog.color.copy(fogDayColor).lerp(fogNightColor, n);
+  scene.fog.density = THREE.MathUtils.lerp(0.016, 0.021, n);
+  renderer.toneMappingExposure = THREE.MathUtils.lerp(1.22, 1.04, n);
+
+  const lanternStrength = THREE.MathUtils.lerp(0.5, 2.8, n);
+  environment.lanternBulbs.forEach((material) => {
+    material.emissiveIntensity = lanternStrength;
+  });
+  environment.lanternGlows.forEach((glow) => {
+    glow.intensity = THREE.MathUtils.lerp(0.55, 2.6, n);
+  });
+
+  if (environment.firefliesMaterial) {
+    environment.firefliesMaterial.opacity = THREE.MathUtils.lerp(0.22, 0.85, n);
+  }
+  if (environment.cloudMaterial) {
+    environment.cloudMaterial.opacity = THREE.MathUtils.lerp(0.26, 0.06, n);
+  }
+  if (environment.starsMaterial) {
+    environment.starsMaterial.opacity = n * 0.9;
+  }
+  if (environment.stars) {
+    environment.stars.position.copy(state.player.position);
+  }
+}
+
+function toggleNight() {
+  state.nightTarget = state.nightTarget === 1 ? 0 : 1;
+  const isNight = state.nightTarget === 1;
+  if (nightButton) {
+    nightButton.classList.toggle("active", isNight);
+    nightButton.setAttribute("aria-pressed", String(isNight));
+  }
+}
+
+// ── Emotes: short-lived emoji sprites that float up from a resident ─────────
+function getEmoteTexture(emoji) {
+  if (emoteTextureCache.has(emoji)) {
+    return emoteTextureCache.get(emoji);
+  }
+  const size = 128;
+  const emoteCanvas = document.createElement("canvas");
+  emoteCanvas.width = size;
+  emoteCanvas.height = size;
+  const context2d = emoteCanvas.getContext("2d");
+  context2d.font = "96px serif";
+  context2d.textAlign = "center";
+  context2d.textBaseline = "middle";
+  context2d.fillText(emoji, size / 2, size / 2 + 6);
+  const texture = new THREE.CanvasTexture(emoteCanvas);
+  emoteTextureCache.set(emoji, texture);
+  return texture;
+}
+
+function spawnEmote(npc, emoji) {
+  const sprite = new THREE.Sprite(
+    new THREE.SpriteMaterial({
+      map: getEmoteTexture(emoji),
+      transparent: true,
+      depthWrite: false
+    })
+  );
+  sprite.scale.setScalar(0.62);
+  sprite.position.copy(npc.group.position);
+  sprite.position.y += 2.75;
+  scene.add(sprite);
+  activeEmotes.push({ sprite, npc, born: state.currentTime });
+}
+
+function emoteFor(expertId, emoji) {
+  const npc = npcMap.get(expertId);
+  if (npc) {
+    spawnEmote(npc, emoji);
+  }
+}
+
+function updateEmotes() {
+  const lifetime = 1.5;
+  for (let index = activeEmotes.length - 1; index >= 0; index -= 1) {
+    const emote = activeEmotes[index];
+    const age = state.currentTime - emote.born;
+    if (age >= lifetime) {
+      scene.remove(emote.sprite);
+      emote.sprite.material.dispose(); // texture stays cached for reuse
+      activeEmotes.splice(index, 1);
+      continue;
+    }
+    emote.sprite.position.x = emote.npc.group.position.x;
+    emote.sprite.position.z = emote.npc.group.position.z;
+    emote.sprite.position.y = emote.npc.group.position.y + 2.75 + age * 0.55;
+    emote.sprite.material.opacity =
+      age < 0.2 ? age / 0.2 : 1 - Math.max(0, (age - 0.9) / (lifetime - 0.9));
+  }
+}
+
+// ── Minimap: top-down park map drawn on a 2D canvas every frame ─────────────
+function updateMinimap() {
+  if (!minimapContext) {
+    return;
+  }
+  const size = minimapCanvas.width;
+  const half = size / 2;
+  const scale = (half - 10) / worldRadius;
+  const ctx = minimapContext;
+
+  ctx.clearRect(0, 0, size, size);
+  ctx.save();
+  ctx.beginPath();
+  ctx.arc(half, half, half - 2, 0, Math.PI * 2);
+  ctx.clip();
+
+  // Ground: darkens with the night mix so the map matches the scene mood
+  const n = state.nightMix;
+  ctx.fillStyle = `rgba(${Math.round(58 - 40 * n)}, ${Math.round(96 - 70 * n)}, ${Math.round(64 - 38 * n)}, 0.9)`;
+  ctx.fillRect(0, 0, size, size);
+
+  // Ring path (annulus 12..16.4 in world units) and the two crossing paths
+  ctx.strokeStyle = "rgba(205, 184, 136, 0.55)";
+  ctx.lineWidth = 4.4 * scale;
+  ctx.beginPath();
+  ctx.arc(half, half, 14.2 * scale, 0, Math.PI * 2);
+  ctx.stroke();
+
+  ctx.lineWidth = 2.4 * scale;
+  ctx.beginPath();
+  ctx.moveTo(half, half - 11 * scale);
+  ctx.lineTo(half, half + 11 * scale);
+  ctx.moveTo(half - 11 * scale, half);
+  ctx.lineTo(half + 11 * scale, half);
+  ctx.stroke();
+
+  // Fountain + pond landmarks
+  ctx.fillStyle = "rgba(91, 191, 188, 0.85)";
+  ctx.beginPath();
+  ctx.arc(half, half, 3.1 * scale, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.beginPath();
+  ctx.arc(half + -7.8 * scale, half + 4.6 * scale, 4.2 * scale, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Residents: accent dots, ringed when nearby/selected
+  npcMap.forEach((resident) => {
+    const x = half + resident.group.position.x * scale;
+    const y = half + resident.group.position.z * scale;
+    const active =
+      resident.expert.id === state.nearbyId || resident.expert.id === state.selectedId;
+    ctx.fillStyle = resident.expert.color;
+    ctx.beginPath();
+    ctx.arc(x, y, active ? 4.6 : 3.4, 0, Math.PI * 2);
+    ctx.fill();
+    if (active) {
+      ctx.strokeStyle = "rgba(255, 255, 255, 0.9)";
+      ctx.lineWidth = 1.4;
+      ctx.stroke();
+    }
+  });
+
+  // Player: white arrow rotated to the camera yaw (yaw 0 faces -z = map up)
+  ctx.save();
+  ctx.translate(
+    half + state.player.position.x * scale,
+    half + state.player.position.z * scale
+  );
+  ctx.rotate(-state.yaw);
+  ctx.fillStyle = "#ffffff";
+  ctx.beginPath();
+  ctx.moveTo(0, -7);
+  ctx.lineTo(5, 6);
+  ctx.lineTo(0, 3.2);
+  ctx.lineTo(-5, 6);
+  ctx.closePath();
+  ctx.fill();
+  ctx.restore();
+
+  ctx.restore();
+
+  // Rim
+  ctx.strokeStyle = "rgba(255, 255, 255, 0.22)";
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.arc(half, half, half - 2, 0, Math.PI * 2);
+  ctx.stroke();
 }
 
 function createSoftParticleTexture() {
@@ -795,9 +1136,17 @@ async function loadRuntimeConfig() {
 }
 
 function updateRuntimeBadge() {
-  runtimeStatus.textContent = state.runtime.mode === "openai" && state.runtime.model
-    ? `OpenAI integrated · ${state.runtime.model}`
-    : "Integrated local prototype";
+  const { mode, model } = state.runtime;
+  runtimeStatus.classList.remove("claude-active", "openai-active");
+  if (mode === "claude" && model) {
+    runtimeStatus.textContent = `Claude · ${model}`;
+    runtimeStatus.classList.add("claude-active");
+  } else if (mode === "openai" && model) {
+    runtimeStatus.textContent = `OpenAI · ${model}`;
+    runtimeStatus.classList.add("openai-active");
+  } else {
+    runtimeStatus.textContent = "Local prototype mode";
+  }
 }
 
 function updateChatPlaceholder(expert) {
@@ -829,53 +1178,154 @@ function resizeChatInput() {
 
 async function handleExpertQuestion(expert, question) {
   const memory = getConversationMemory(expert.id);
-  pushChat(expert.id, "user", question);
 
+  // Add user message to history and render immediately
+  pushChatUser(expert.id, question);
+
+  // Scope check — out-of-scope gets an instant local reply
   if (!isQuestionInScope(expert, question) && !(memory.length && looksLikeFollowUp(question))) {
     const answer = buildOutOfScopeAnswer(expert);
-    pushChat(expert.id, "expert", `${expert.name}: ${answer}`);
+    pushChatExpert(expert.id, expert, answer);
     triggerBubble(expert.id, answer, 3.4);
+    emoteFor(expert.id, "🤔");
     return;
   }
 
-  if (state.runtime.mode !== "openai") {
+  // Local-only mode: simulate delay then reply from answer bank
+  if (state.runtime.mode === "local") {
     showThinkingIndicator(expert);
     window.setTimeout(() => {
       removeThinkingIndicator();
       const answer = generateResponse(expert, question, memory);
-      pushChat(expert.id, "expert", answer);
-      triggerBubble(expert.id, stripSpeakerPrefix(answer), 3.4);
-    }, 600);
+      const clean = stripSpeakerPrefix(answer);
+      pushChatExpert(expert.id, expert, clean);
+      triggerBubble(expert.id, clean, 3.4);
+      emoteFor(expert.id, "💡");
+    }, 700);
     return;
   }
 
+  // Streaming mode (claude or openai)
+  lockChatInput(expert);
+
+  let fullRawText = "";
+  let streamNode = null;
+  let streamBody = null;
+  let streamTextEl = null;
+
+  askExpertQuestionStream(
+    { expertId: expert.id, question, history: memory },
+    {
+      onChunk(text) {
+        fullRawText += text;
+        if (!streamNode) {
+          removeThinkingIndicator();
+          const created = createStreamingMessage(expert);
+          streamNode = created.node;
+          streamBody = created.body;
+          streamTextEl = created.textEl;
+          conversationFeed.append(streamNode);
+        }
+        updateStreamText(streamTextEl, fullRawText);
+        conversationFeed.scrollTop = conversationFeed.scrollHeight;
+      },
+      onDone({ answer }) {
+        const finalAnswer = answer || finalizeExpertAnswer(fullRawText, expert);
+        if (streamBody) {
+          streamNode.classList.remove("streaming");
+          finalizeStreamNode(streamBody, finalAnswer);
+        } else {
+          removeThinkingIndicator();
+        }
+        storeChatExpert(expert.id, expert, finalAnswer);
+        triggerBubble(expert.id, finalAnswer, 3.4);
+        emoteFor(expert.id, "✨");
+        unlockChatInput(expert);
+      },
+      onError() {
+        removeThinkingIndicator();
+        if (streamNode) streamNode.remove();
+        const answer = generateResponse(expert, question, memory);
+        const clean = stripSpeakerPrefix(answer);
+        pushChatExpert(expert.id, expert, clean);
+        triggerBubble(expert.id, clean, 3.4);
+        unlockChatInput(expert);
+      }
+    }
+  );
+}
+
+function lockChatInput(expert) {
   chatInput.disabled = true;
-  chatInput.placeholder = `Thinking with ${expert.name.split(" ")[0]}...`;
+  chatInput.placeholder = `${expert.name.split(" ")[0]} is thinking…`;
+  sendButton.disabled = true;
+  sendButton.classList.add("loading");
   resizeChatInput();
   showThinkingIndicator(expert);
+}
 
-  try {
-    const response = await askExpertQuestion({
-      expertId: expert.id,
-      question,
-      history: memory
-    });
-    removeThinkingIndicator();
-    pushChat(expert.id, "expert", `${expert.name}: ${response.answer}`);
-    triggerBubble(expert.id, response.answer, 3.4);
-  } catch (error) {
-    removeThinkingIndicator();
-    const answer = generateResponse(expert, question, memory);
-    pushChat(
-      expert.id,
-      "expert",
-      answer
-    );
-    triggerBubble(expert.id, stripSpeakerPrefix(answer), 3.4);
-  } finally {
-    chatInput.disabled = false;
-    updateChatPlaceholder(state.selectedId === expert.id ? expert : getSelectedResident());
-  }
+function unlockChatInput(expert) {
+  chatInput.disabled = false;
+  sendButton.disabled = false;
+  sendButton.classList.remove("loading");
+  updateChatPlaceholder(state.selectedId === expert.id ? expert : getSelectedResident());
+}
+
+function createStreamingMessage(expert) {
+  const node = document.createElement("article");
+  node.className = "conversation-message expert streaming";
+
+  const meta = document.createElement("span");
+  meta.className = "conversation-meta";
+  meta.textContent = expert.name.split(" ")[0];
+
+  const body = document.createElement("div");
+  body.className = "conversation-body";
+
+  const textEl = document.createElement("p");
+  textEl.className = "conversation-line";
+
+  const cursor = document.createElement("span");
+  cursor.className = "streaming-cursor";
+  textEl.append(cursor);
+
+  body.append(textEl);
+  node.append(meta, body);
+  return { node, body, textEl };
+}
+
+function updateStreamText(textEl, fullText) {
+  const cursor = textEl.querySelector(".streaming-cursor");
+  textEl.textContent = fullText;
+  if (cursor) textEl.append(cursor);
+}
+
+function finalizeStreamNode(bodyEl, finalText) {
+  bodyEl.replaceChildren();
+  renderConversationBody(bodyEl, finalText);
+}
+
+// Pushes a user message to history and re-renders the conversation feed
+function pushChatUser(expertId, text) {
+  const history = state.chatHistory.get(expertId) ?? [];
+  history.push({ role: "user", text });
+  state.chatHistory.set(expertId, trimConversationHistory(history));
+  if (state.selectedId === expertId) renderConversation(expertId);
+}
+
+// Pushes a finalized expert message to history and re-renders
+function pushChatExpert(expertId, expert, finalText) {
+  const history = state.chatHistory.get(expertId) ?? [];
+  history.push({ role: "expert", text: `${expert.name}: ${finalText}` });
+  state.chatHistory.set(expertId, trimConversationHistory(history));
+  if (state.selectedId === expertId) renderConversation(expertId);
+}
+
+// Pushes expert message to history WITHOUT re-rendering (streaming node already in DOM)
+function storeChatExpert(expertId, expert, finalText) {
+  const history = state.chatHistory.get(expertId) ?? [];
+  history.push({ role: "expert", text: `${expert.name}: ${finalText}` });
+  state.chatHistory.set(expertId, trimConversationHistory(history));
 }
 
 function showThinkingIndicator(expert) {
@@ -993,8 +1443,15 @@ function buildResidents() {
       wanderTarget: new THREE.Vector3(expert.position.x, 0, expert.position.z),
       wanderDelay: 1 + index * 0.6,
       bubbleUntil: 0,
+      waveUntil: 0,
       walkCycle: Math.random() * Math.PI * 2,
       pulseOffset: Math.random() * Math.PI * 2,
+      // Per-NPC personality (0–1) drives walk speed, swing amplitude, idle style
+      personality: Math.random(),
+      // Layered noise seeds for non-repeating idle head movement
+      idleSeed1: Math.random() * 100,
+      idleSeed2: Math.random() * 100,
+      idleSeed3: Math.random() * 100,
       bodyPivot: avatar.bodyPivot,
       headPivot: avatar.headPivot,
       leftArmPivot: avatar.leftArmPivot,
@@ -1067,288 +1524,229 @@ function mixColor(source, target, amount) {
 }
 
 function createResidentAvatar(expert) {
-  const appearance = expert.appearance;
   const root = new THREE.Group();
   const bodyPivot = new THREE.Group();
   bodyPivot.position.y = 0.93;
   root.add(bodyPivot);
 
-  const skinColor = mixColor(appearance.skin, "#fff5eb", 0.16);
-  const cheekColor = mixColor(appearance.skin, "#d98569", 0.14);
-  const hairColor = mixColor(appearance.hair, "#141312", 0.12);
-  const eyeColor = mixColor(appearance.eye, "#0f1418", 0.08);
-  const jacketColor = mixColor(expert.color, "#f3f3ef", 0.18);
-  const shirtColor = mixColor(expert.color, "#fbf7f0", 0.84);
-  const trouserColor = mixColor(expert.color, "#23262d", 0.64);
-  const trimColor = mixColor(appearance.hair, "#090b0d", 0.38);
-  const shoeColor = mixColor(trouserColor, "#111215", 0.58);
-  const accentColor = mixColor(expert.color, "#ffffff", 0.1);
+  const shellColor = mixColor("#eef0f4", expert.color, 0.07);
+  const underColor = mixColor("#2a2e36", expert.color, 0.10);
+  const jointColor = "#1c1f26";
 
-  const skinMaterial = new THREE.MeshStandardMaterial({
-    color: skinColor,
-    roughness: 0.86,
-    metalness: 0.02
+  const shellMaterial = new THREE.MeshStandardMaterial({
+    color: shellColor,
+    roughness: 0.32,
+    metalness: 0.18
   });
-  const faceMaterial = new THREE.MeshStandardMaterial({
-    color: mixColor(appearance.skin, "#fff7ee", 0.16),
-    roughness: 0.82,
-    metalness: 0.01
+  const underMaterial = new THREE.MeshStandardMaterial({
+    color: underColor,
+    roughness: 0.55,
+    metalness: 0.35
   });
-  const cheekMaterial = new THREE.MeshStandardMaterial({
-    color: cheekColor,
-    roughness: 0.9,
-    metalness: 0.01
-  });
-  const lipMaterial = new THREE.MeshStandardMaterial({
-    color: mixColor(appearance.skin, "#9f6759", 0.34),
-    roughness: 0.9,
-    metalness: 0.01
-  });
-  const hairMaterial = new THREE.MeshStandardMaterial({
-    color: hairColor,
-    roughness: 0.96,
-    metalness: 0.02
-  });
-  const eyeWhiteMaterial = new THREE.MeshStandardMaterial({
-    color: "#fcfbf7",
-    roughness: 0.36,
-    metalness: 0
-  });
-  const eyeMaterial = new THREE.MeshStandardMaterial({
-    color: eyeColor,
-    roughness: 0.22,
-    metalness: 0.04
-  });
-  const jacketMaterial = new THREE.MeshStandardMaterial({
-    color: jacketColor,
-    roughness: 0.74,
-    metalness: 0.04
-  });
-  const shirtMaterial = new THREE.MeshStandardMaterial({
-    color: shirtColor,
-    roughness: 0.84,
-    metalness: 0.02
-  });
-  const trouserMaterial = new THREE.MeshStandardMaterial({
-    color: trouserColor,
-    roughness: 0.86,
-    metalness: 0.03
-  });
-  const trimMaterial = new THREE.MeshStandardMaterial({
-    color: trimColor,
-    roughness: 0.9,
-    metalness: 0.04
+  const jointMaterial = new THREE.MeshStandardMaterial({
+    color: jointColor,
+    roughness: 0.45,
+    metalness: 0.5
   });
   const accentMaterial = new THREE.MeshStandardMaterial({
-    color: accentColor,
-    roughness: 0.62,
-    metalness: 0.08,
+    color: expert.color,
+    roughness: 0.35,
+    metalness: 0.25,
     emissive: expert.color,
-    emissiveIntensity: 0.05
+    emissiveIntensity: 0.35
   });
-  const shoeMaterial = new THREE.MeshStandardMaterial({
-    color: shoeColor,
-    roughness: 0.94,
-    metalness: 0.02
+  const glowMaterial = new THREE.MeshStandardMaterial({
+    color: mixColor(expert.color, "#ffffff", 0.45),
+    roughness: 0.2,
+    metalness: 0,
+    emissive: expert.color,
+    emissiveIntensity: 1.1
+  });
+  const visorMaterial = new THREE.MeshStandardMaterial({
+    color: "#0c0f14",
+    roughness: 0.12,
+    metalness: 0.65
   });
 
-  const hips = new THREE.Mesh(
-    new THREE.CapsuleGeometry(0.19, 0.18, 4, 10),
-    trouserMaterial
+  // ── Body: pelvis + tapered torso, all overlapping so there are no seams ──
+  const pelvis = new THREE.Mesh(
+    new THREE.CapsuleGeometry(0.20, 0.14, 8, 18),
+    underMaterial
   );
-  hips.scale.set(1.24, 1, 0.96);
-  hips.position.y = 0;
-  bodyPivot.add(hips);
+  pelvis.scale.set(1.18, 0.9, 0.92);
+  pelvis.position.y = -0.02;
+  bodyPivot.add(pelvis);
 
-  const belt = new THREE.Mesh(
-    new THREE.TorusGeometry(0.24, 0.026, 8, 26),
-    trimMaterial
+  const waistRing = new THREE.Mesh(
+    new THREE.TorusGeometry(0.215, 0.028, 10, 28),
+    accentMaterial
   );
-  belt.rotation.x = Math.PI / 2;
-  belt.position.y = 0.1;
-  bodyPivot.add(belt);
+  waistRing.rotation.x = Math.PI / 2;
+  waistRing.position.y = 0.14;
+  waistRing.scale.set(1.08, 0.9, 1);
+  bodyPivot.add(waistRing);
 
   const torso = new THREE.Mesh(
-    new THREE.CapsuleGeometry(0.28, 0.52, 6, 16),
-    jacketMaterial
+    new THREE.CapsuleGeometry(0.25, 0.44, 8, 22),
+    shellMaterial
   );
-  torso.scale.set(1.08, 1.14, 0.86);
-  torso.position.y = 0.54;
+  torso.scale.set(1.12, 1.06, 0.84);
+  torso.position.y = 0.52;
   bodyPivot.add(torso);
 
-  const shirtPanel = new THREE.Mesh(
-    new THREE.BoxGeometry(0.3, 0.54, 0.05),
-    shirtMaterial
+  // Chest core: recessed dark dish + glowing emblem
+  const coreDish = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.105, 0.125, 0.05, 24),
+    jointMaterial
   );
-  shirtPanel.position.set(0, 0.53, 0.24);
-  bodyPivot.add(shirtPanel);
+  coreDish.rotation.x = Math.PI / 2;
+  coreDish.position.set(0, 0.60, 0.20);
+  bodyPivot.add(coreDish);
 
-  [-0.11, 0.11].forEach((x) => {
-    const lapel = new THREE.Mesh(
-      new THREE.BoxGeometry(0.11, 0.28, 0.03),
-      trimMaterial
-    );
-    lapel.position.set(x, 0.69, 0.23);
-    lapel.rotation.z = x < 0 ? -0.28 : 0.28;
-    bodyPivot.add(lapel);
-  });
-
-  const shoulderLine = new THREE.Mesh(
-    new THREE.CylinderGeometry(0.06, 0.06, 0.94, 12),
-    jacketMaterial
+  const coreGlow = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.062, 0.062, 0.06, 22),
+    glowMaterial
   );
-  shoulderLine.rotation.z = Math.PI / 2;
-  shoulderLine.position.set(0, 0.89, 0.03);
-  bodyPivot.add(shoulderLine);
+  coreGlow.rotation.x = Math.PI / 2;
+  coreGlow.position.set(0, 0.60, 0.208);
+  bodyPivot.add(coreGlow);
 
+  const coreRing = new THREE.Mesh(
+    new THREE.TorusGeometry(0.088, 0.014, 10, 26),
+    accentMaterial
+  );
+  coreRing.position.set(0, 0.60, 0.226);
+  bodyPivot.add(coreRing);
+
+  // Collar and neck
   const collar = new THREE.Mesh(
-    new THREE.TorusGeometry(0.17, 0.024, 8, 24),
-    trimMaterial
+    new THREE.CylinderGeometry(0.155, 0.185, 0.09, 20),
+    underMaterial
   );
-  collar.rotation.x = Math.PI / 2;
-  collar.position.set(0, 0.96, 0.02);
+  collar.position.set(0, 0.94, 0.01);
   bodyPivot.add(collar);
 
   const neck = new THREE.Mesh(
-    new THREE.CylinderGeometry(0.085, 0.1, 0.18, 10),
-    skinMaterial
+    new THREE.CylinderGeometry(0.075, 0.09, 0.20, 14),
+    jointMaterial
   );
-  neck.position.set(0, 1.03, 0.01);
+  neck.position.set(0, 1.04, 0.01);
   bodyPivot.add(neck);
 
+  // ── Head: rounded helmet + glossy visor + glowing eyes ──
   const headPivot = new THREE.Group();
   headPivot.position.set(0, 1.01, 0.02);
   bodyPivot.add(headPivot);
 
   const head = new THREE.Mesh(
-    new THREE.SphereGeometry(0.29, 24, 20),
-    skinMaterial
+    new THREE.SphereGeometry(0.27, 26, 22),
+    shellMaterial
   );
-  head.scale.set(0.98, 1.02, 0.94);
+  head.scale.set(1.0, 0.96, 0.94);
   head.position.y = 0.34;
   headPivot.add(head);
 
-  const facePlane = new THREE.Mesh(
-    new THREE.SphereGeometry(0.25, 20, 18),
-    faceMaterial
+  // Visor: dark glass band inset into the front of the helmet
+  const visor = new THREE.Mesh(
+    new THREE.SphereGeometry(0.215, 24, 20),
+    visorMaterial
   );
-  facePlane.scale.set(0.86, 0.96, 0.46);
-  facePlane.position.set(0, 0.29, 0.16);
-  headPivot.add(facePlane);
+  visor.scale.set(0.84, 0.58, 0.52);
+  visor.position.set(0, 0.35, 0.135);
+  headPivot.add(visor);
 
-  const jaw = new THREE.Mesh(
-    new THREE.SphereGeometry(0.16, 16, 14),
-    faceMaterial
-  );
-  jaw.scale.set(0.94, 0.52, 0.58);
-  jaw.position.set(0, 0.19, 0.10);
-  headPivot.add(jaw);
-
-  [-0.10, 0.10].forEach((x) => {
-    const cheek = new THREE.Mesh(
-      new THREE.SphereGeometry(0.055, 12, 10),
-      cheekMaterial
+  // Eyes: soft glowing capsules on the visor
+  [-0.085, 0.085].forEach((x) => {
+    const eye = new THREE.Mesh(
+      new THREE.CapsuleGeometry(0.026, 0.028, 6, 12),
+      glowMaterial
     );
-    cheek.scale.set(0.96, 0.68, 0.42);
-    cheek.position.set(x, 0.27, 0.20);
-    headPivot.add(cheek);
+    eye.scale.set(1, 0.9, 0.5);
+    eye.position.set(x, 0.355, 0.252);
+    headPivot.add(eye);
   });
 
-  [-0.25, 0.25].forEach((x) => {
-    const ear = new THREE.Mesh(
-      new THREE.SphereGeometry(0.046, 10, 10),
-      skinMaterial
+  // Chin guard closes the gap between visor and neck
+  const chin = new THREE.Mesh(
+    new THREE.SphereGeometry(0.155, 18, 14),
+    underMaterial
+  );
+  chin.scale.set(1.06, 0.6, 0.78);
+  chin.position.set(0, 0.185, 0.06);
+  headPivot.add(chin);
+
+  // Side audio discs
+  [-0.255, 0.255].forEach((x) => {
+    const disc = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.062, 0.062, 0.035, 18),
+      jointMaterial
     );
-    ear.scale.set(0.60, 0.88, 0.48);
-    ear.position.set(x, 0.34, 0.0);
-    headPivot.add(ear);
+    disc.rotation.z = Math.PI / 2;
+    disc.position.set(x, 0.34, 0.0);
+    headPivot.add(disc);
+
+    const discGlow = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.028, 0.028, 0.042, 14),
+      accentMaterial
+    );
+    discGlow.rotation.z = Math.PI / 2;
+    discGlow.position.set(x, 0.34, 0.0);
+    headPivot.add(discGlow);
   });
 
-  [-0.09, 0.09].forEach((x) => {
-    const eyeWhite = new THREE.Mesh(
-      new THREE.SphereGeometry(0.046, 14, 12),
-      eyeWhiteMaterial
+  // Antenna with glowing tip — skipped for attire kits that wear a hat
+  const wearsHat = ["designer", "mentor", "builder"].includes(expert.attire);
+  if (!wearsHat) {
+    const antenna = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.012, 0.016, 0.16, 8),
+      jointMaterial
     );
-    eyeWhite.scale.set(1.06, 0.82, 0.42);
-    eyeWhite.position.set(x, 0.36, 0.244);
-    headPivot.add(eyeWhite);
+    antenna.position.set(0.12, 0.63, -0.04);
+    antenna.rotation.z = -0.14;
+    headPivot.add(antenna);
 
-    const iris = new THREE.Mesh(
-      new THREE.SphereGeometry(0.024, 12, 10),
-      eyeMaterial
+    const antennaTip = new THREE.Mesh(
+      new THREE.SphereGeometry(0.028, 12, 10),
+      glowMaterial
     );
-    iris.scale.set(1, 1, 0.48);
-    iris.position.set(x, 0.36, 0.265);
-    headPivot.add(iris);
+    antennaTip.position.set(0.131, 0.715, -0.04);
+    headPivot.add(antennaTip);
+  }
 
-    const pupil = new THREE.Mesh(
-      new THREE.SphereGeometry(0.012, 10, 10),
-      trimMaterial
-    );
-    pupil.scale.set(1, 1, 0.42);
-    pupil.position.set(x, 0.36, 0.277);
-    headPivot.add(pupil);
-
-    const brow = new THREE.Mesh(
-      new THREE.BoxGeometry(0.080, 0.014, 0.018),
-      trimMaterial
-    );
-    brow.position.set(x, 0.418, 0.228);
-    brow.rotation.z = x < 0 ? 0.12 : -0.12;
-    headPivot.add(brow);
+  addRobotAttire(expert.attire, bodyPivot, headPivot, {
+    shellMaterial,
+    underMaterial,
+    jointMaterial,
+    accentMaterial,
+    glowMaterial
   });
 
-  const nose = new THREE.Mesh(
-    new THREE.SphereGeometry(0.036, 14, 12),
-    faceMaterial
-  );
-  nose.scale.set(0.62, 0.86, 0.52);
-  nose.position.set(0, 0.29, 0.24);
-  headPivot.add(nose);
-
-  const mouth = new THREE.Mesh(
-    new THREE.CapsuleGeometry(0.009, 0.048, 4, 8),
-    lipMaterial
-  );
-  mouth.rotation.z = Math.PI / 2;
-  mouth.position.set(0, 0.22, 0.224);
-  headPivot.add(mouth);
-
-  const lowerLip = new THREE.Mesh(
-    new THREE.SphereGeometry(0.028, 10, 10),
-    lipMaterial
-  );
-  lowerLip.scale.set(1.16, 0.32, 0.28);
-  lowerLip.position.set(0, 0.206, 0.216);
-  headPivot.add(lowerLip);
-
-  addHumanHair(headPivot, appearance.hairStyle, hairMaterial, accentMaterial);
-
-  const leftArm = buildHumanArm(-1, jacketMaterial, skinMaterial, trimMaterial);
-  const rightArm = buildHumanArm(1, jacketMaterial, skinMaterial, trimMaterial);
+  const leftArm = buildRobotArm(-1, shellMaterial, jointMaterial, accentMaterial);
+  const rightArm = buildRobotArm(1, shellMaterial, jointMaterial, accentMaterial);
   bodyPivot.add(leftArm.pivot);
   bodyPivot.add(rightArm.pivot);
 
-  const leftLeg = buildHumanLeg(-1, trouserMaterial, trimMaterial, shoeMaterial);
-  const rightLeg = buildHumanLeg(1, trouserMaterial, trimMaterial, shoeMaterial);
+  const leftLeg = buildRobotLeg(-1, shellMaterial, jointMaterial, underMaterial, accentMaterial);
+  const rightLeg = buildRobotLeg(1, shellMaterial, jointMaterial, underMaterial, accentMaterial);
   root.add(leftLeg.pivot);
   root.add(rightLeg.pivot);
 
+  // Status halo: flat glowing ring hovering above the head
   const halo = new THREE.Mesh(
-    new THREE.RingGeometry(0.44, 0.58, 42),
+    new THREE.TorusGeometry(0.16, 0.016, 10, 40),
     new THREE.MeshStandardMaterial({
       color: expert.color,
       emissive: expert.color,
-      emissiveIntensity: 0.24,
+      emissiveIntensity: 0.9,
       transparent: true,
-      opacity: 0.44,
-      roughness: 0.5,
-      metalness: 0.04,
-      side: THREE.DoubleSide,
+      opacity: 0.7,
+      roughness: 0.4,
+      metalness: 0.1,
       depthWrite: false
     })
   );
-  halo.position.set(0, 0.63, -0.24);
+  halo.rotation.x = Math.PI / 2;
+  halo.position.set(0, 1.86, 0.02);
   bodyPivot.add(halo);
 
   root.traverse((node) => {
@@ -1372,6 +1770,231 @@ function createResidentAvatar(expert) {
     rightShin: rightLeg.shin,
     halo
   };
+}
+
+// Each expert wears a small themed kit so the six robots read differently at a
+// glance. All pieces are cheap primitives sharing the avatar's materials.
+function addRobotAttire(kit, bodyPivot, headPivot, materials) {
+  const { underMaterial, jointMaterial, accentMaterial, glowMaterial } = materials;
+
+  if (kit === "visionary") {
+    // Architect: shoulder mantle, short cape, thin data-crown around the helmet
+    [-0.44, 0.44].forEach((x) => {
+      const mantle = new THREE.Mesh(
+        new THREE.SphereGeometry(0.155, 16, 12),
+        underMaterial
+      );
+      mantle.scale.set(1.12, 0.5, 1.02);
+      mantle.position.set(x, 0.905, 0.01);
+      bodyPivot.add(mantle);
+    });
+
+    const cape = new THREE.Mesh(
+      new THREE.BoxGeometry(0.54, 0.72, 0.028),
+      underMaterial
+    );
+    cape.position.set(0, 0.50, -0.255);
+    cape.rotation.x = 0.10;
+    bodyPivot.add(cape);
+
+    const capeHem = new THREE.Mesh(
+      new THREE.BoxGeometry(0.54, 0.05, 0.032),
+      accentMaterial
+    );
+    capeHem.position.set(0, 0.155, -0.286);
+    capeHem.rotation.x = 0.10;
+    bodyPivot.add(capeHem);
+
+    const crown = new THREE.Mesh(
+      new THREE.TorusGeometry(0.225, 0.016, 8, 32),
+      accentMaterial
+    );
+    crown.rotation.x = Math.PI / 2;
+    crown.position.set(0, 0.50, 0);
+    headPivot.add(crown);
+  }
+
+  if (kit === "designer") {
+    // UX designer: tilted beret and a knotted accent scarf
+    const beret = new THREE.Mesh(
+      new THREE.SphereGeometry(0.20, 18, 14),
+      underMaterial
+    );
+    beret.scale.set(1.3, 0.5, 1.3);
+    beret.position.set(-0.045, 0.575, 0.0);
+    beret.rotation.z = 0.20;
+    headPivot.add(beret);
+
+    const beretStem = new THREE.Mesh(
+      new THREE.SphereGeometry(0.028, 10, 8),
+      accentMaterial
+    );
+    beretStem.position.set(-0.075, 0.665, 0.0);
+    headPivot.add(beretStem);
+
+    const scarf = new THREE.Mesh(
+      new THREE.TorusGeometry(0.115, 0.036, 10, 22),
+      accentMaterial
+    );
+    scarf.rotation.x = Math.PI / 2;
+    scarf.position.set(0, 1.0, 0.01);
+    bodyPivot.add(scarf);
+
+    const scarfTail = new THREE.Mesh(
+      new THREE.BoxGeometry(0.09, 0.22, 0.03),
+      accentMaterial
+    );
+    scarfTail.position.set(0.085, 0.865, 0.175);
+    scarfTail.rotation.x = 0.14;
+    bodyPivot.add(scarfTail);
+  }
+
+  if (kit === "racer") {
+    // Motion engineer: aero head fin, twin back thrusters with glow tips
+    const fin = new THREE.Mesh(
+      new THREE.BoxGeometry(0.026, 0.15, 0.30),
+      accentMaterial
+    );
+    fin.position.set(0, 0.58, -0.06);
+    fin.rotation.x = -0.16;
+    headPivot.add(fin);
+
+    [-0.14, 0.14].forEach((x) => {
+      const thruster = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.058, 0.066, 0.24, 12),
+        jointMaterial
+      );
+      thruster.position.set(x, 0.62, -0.245);
+      thruster.rotation.x = 0.12;
+      bodyPivot.add(thruster);
+
+      const flame = new THREE.Mesh(
+        new THREE.SphereGeometry(0.04, 10, 8),
+        glowMaterial
+      );
+      flame.position.set(x, 0.49, -0.262);
+      bodyPivot.add(flame);
+    });
+
+    const brow = new THREE.Mesh(
+      new THREE.BoxGeometry(0.30, 0.024, 0.03),
+      accentMaterial
+    );
+    brow.position.set(0, 0.475, 0.205);
+    headPivot.add(brow);
+  }
+
+  if (kit === "host") {
+    // Community lead: bow tie and an over-head headphone band
+    const bowKnot = new THREE.Mesh(
+      new THREE.SphereGeometry(0.032, 10, 8),
+      accentMaterial
+    );
+    bowKnot.position.set(0, 0.915, 0.165);
+    bodyPivot.add(bowKnot);
+
+    [-1, 1].forEach((side) => {
+      const wing = new THREE.Mesh(
+        new THREE.ConeGeometry(0.05, 0.10, 10),
+        accentMaterial
+      );
+      wing.rotation.z = side * (Math.PI / 2);
+      wing.position.set(side * 0.072, 0.915, 0.16);
+      bodyPivot.add(wing);
+    });
+
+    // Torus arc (0..PI) sits in the XY plane — an ear-to-ear band over the helmet
+    const band = new THREE.Mesh(
+      new THREE.TorusGeometry(0.275, 0.026, 8, 24, Math.PI),
+      jointMaterial
+    );
+    band.position.set(0, 0.34, 0.0);
+    headPivot.add(band);
+  }
+
+  if (kit === "mentor") {
+    // Knowledge mentor: mortarboard with tassel and round scholar glasses
+    const capBase = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.165, 0.185, 0.10, 18),
+      underMaterial
+    );
+    capBase.position.set(0, 0.565, 0);
+    headPivot.add(capBase);
+
+    const board = new THREE.Mesh(
+      new THREE.BoxGeometry(0.5, 0.032, 0.5),
+      underMaterial
+    );
+    board.position.set(0, 0.625, 0);
+    board.rotation.y = Math.PI / 4;
+    headPivot.add(board);
+
+    const button = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.03, 0.03, 0.02, 10),
+      accentMaterial
+    );
+    button.position.set(0, 0.65, 0);
+    headPivot.add(button);
+
+    const tassel = new THREE.Mesh(
+      new THREE.BoxGeometry(0.022, 0.16, 0.022),
+      accentMaterial
+    );
+    tassel.position.set(0.235, 0.56, 0.235);
+    headPivot.add(tassel);
+
+    [-0.085, 0.085].forEach((x) => {
+      const rim = new THREE.Mesh(
+        new THREE.TorusGeometry(0.052, 0.011, 8, 20),
+        jointMaterial
+      );
+      rim.position.set(x, 0.355, 0.252);
+      headPivot.add(rim);
+    });
+
+    const bridge = new THREE.Mesh(
+      new THREE.BoxGeometry(0.07, 0.012, 0.012),
+      jointMaterial
+    );
+    bridge.position.set(0, 0.365, 0.252);
+    headPivot.add(bridge);
+  }
+
+  if (kit === "builder") {
+    // Prototype builder: hard hat with brim and a tool belt with pouches
+    const hatDome = new THREE.Mesh(
+      new THREE.SphereGeometry(0.235, 20, 14, 0, Math.PI * 2, 0, Math.PI * 0.52),
+      accentMaterial
+    );
+    hatDome.scale.set(1.08, 0.9, 1.08);
+    hatDome.position.set(0, 0.42, 0);
+    headPivot.add(hatDome);
+
+    const brim = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.30, 0.315, 0.028, 24),
+      accentMaterial
+    );
+    brim.position.set(0, 0.51, 0.02);
+    headPivot.add(brim);
+
+    const belt = new THREE.Mesh(
+      new THREE.TorusGeometry(0.235, 0.042, 10, 26),
+      underMaterial
+    );
+    belt.rotation.x = Math.PI / 2;
+    belt.scale.set(1.12, 0.95, 1);
+    belt.position.set(0, 0.075, 0);
+    bodyPivot.add(belt);
+
+    [-0.195, 0.195].forEach((x) => {
+      const pouch = new THREE.Mesh(
+        new THREE.BoxGeometry(0.09, 0.11, 0.055),
+        jointMaterial
+      );
+      pouch.position.set(x, 0.03, 0.155);
+      bodyPivot.add(pouch);
+    });
+  }
 }
 
 function createResidentBeacon(color) {
@@ -1421,225 +2044,155 @@ function createResidentBeacon(color) {
   return { group, column, ring, crown };
 }
 
-function addHumanHair(headPivot, hairStyle, hairMaterial, accentMaterial) {
-  const cap = new THREE.Mesh(
-    new THREE.SphereGeometry(0.3, 24, 18, 0, Math.PI * 2, 0, Math.PI * 0.60),
-    hairMaterial
-  );
-  cap.scale.set(1.02, 0.94, 1.02);
-  cap.position.set(0, 0.49, 0.0);
-  headPivot.add(cap);
-
-  if (hairStyle === "parted") {
-    [-0.09, 0.09].forEach((x) => {
-      const sweep = new THREE.Mesh(
-        new THREE.SphereGeometry(0.1, 12, 10),
-        hairMaterial
-      );
-      sweep.scale.set(1.4, 0.7, 1);
-      sweep.position.set(x, 0.53, 0.16);
-      sweep.rotation.z = x < 0 ? 0.28 : -0.28;
-      headPivot.add(sweep);
-    });
-  }
-
-  if (hairStyle === "waves") {
-    [-0.18, 0.18].forEach((x) => {
-      const wave = new THREE.Mesh(
-        new THREE.SphereGeometry(0.09, 12, 10),
-        hairMaterial
-      );
-      wave.scale.set(1.1, 1.2, 0.86);
-      wave.position.set(x, 0.44, 0.12);
-      headPivot.add(wave);
-    });
-
-    const fringe = new THREE.Mesh(
-      new THREE.SphereGeometry(0.12, 12, 10),
-      hairMaterial
-    );
-    fringe.scale.set(1.5, 0.58, 0.82);
-    fringe.position.set(0, 0.5, 0.18);
-    headPivot.add(fringe);
-  }
-
-  if (hairStyle === "fade") {
-    const top = new THREE.Mesh(
-      new THREE.BoxGeometry(0.28, 0.07, 0.22),
-      hairMaterial
-    );
-    top.position.set(0, 0.62, 0.03);
-    headPivot.add(top);
-
-    const line = new THREE.Mesh(
-      new THREE.BoxGeometry(0.18, 0.02, 0.04),
-      accentMaterial
-    );
-    line.position.set(0.08, 0.51, 0.17);
-    line.rotation.z = -0.24;
-    headPivot.add(line);
-  }
-
-  if (hairStyle === "bun") {
-    const bun = new THREE.Mesh(
-      new THREE.SphereGeometry(0.08, 12, 10),
-      hairMaterial
-    );
-    bun.scale.set(1, 1, 0.9);
-    bun.position.set(0, 0.47, -0.25);
-    headPivot.add(bun);
-
-    const tie = new THREE.Mesh(
-      new THREE.TorusGeometry(0.06, 0.01, 6, 14),
-      accentMaterial
-    );
-    tie.rotation.x = Math.PI / 2;
-    tie.position.set(0, 0.47, -0.245);
-    headPivot.add(tie);
-  }
-
-  if (hairStyle === "long") {
-    const backHair = new THREE.Mesh(
-      new THREE.BoxGeometry(0.24, 0.38, 0.12),
-      hairMaterial
-    );
-    backHair.position.set(0, 0.23, -0.12);
-    headPivot.add(backHair);
-
-    [-0.19, 0.19].forEach((x) => {
-      const lock = new THREE.Mesh(
-        new THREE.CapsuleGeometry(0.04, 0.18, 4, 8),
-        hairMaterial
-      );
-      lock.position.set(x, 0.24, 0.08);
-      headPivot.add(lock);
-    });
-  }
-
-  if (hairStyle === "soft") {
-    [-0.13, 0, 0.13].forEach((x) => {
-      const fringe = new THREE.Mesh(
-        new THREE.SphereGeometry(0.078, 12, 10),
-        hairMaterial
-      );
-      fringe.scale.set(1.16, 0.70, 0.84);
-      fringe.position.set(x, 0.50 - Math.abs(x) * 0.07, 0.17);
-      headPivot.add(fringe);
-    });
-  }
-}
-
-function buildHumanArm(side, sleeveMaterial, skinMaterial, trimMaterial) {
+function buildRobotArm(side, shellMaterial, jointMaterial, accentMaterial) {
   const pivot = new THREE.Group();
-  pivot.position.set(side * 0.48, 0.83, 0.02);
-  pivot.rotation.z = side < 0 ? 0.14 : -0.14;
+  pivot.position.set(side * 0.42, 0.82, 0.01);
+  pivot.rotation.z = side < 0 ? 0.09 : -0.09;
 
-  const shoulder = new THREE.Mesh(
-    new THREE.SphereGeometry(0.12, 10, 10),
-    sleeveMaterial
+  // Shoulder pad: dark ball joint capped by a shell dome
+  const shoulderJoint = new THREE.Mesh(
+    new THREE.SphereGeometry(0.095, 16, 14),
+    jointMaterial
   );
-  shoulder.scale.set(1.16, 1.02, 1);
-  pivot.add(shoulder);
+  pivot.add(shoulderJoint);
 
+  const shoulderPad = new THREE.Mesh(
+    new THREE.SphereGeometry(0.125, 18, 14),
+    shellMaterial
+  );
+  shoulderPad.scale.set(1, 0.82, 0.92);
+  shoulderPad.position.set(side * 0.02, 0.03, 0);
+  pivot.add(shoulderPad);
+
+  // Upper arm: R=0.072, L=0.24 → half-extent 0.192, center -0.26 → spans -0.068..-0.452
   const upperArm = new THREE.Mesh(
-    new THREE.CapsuleGeometry(0.078, 0.24, 4, 10),
-    sleeveMaterial
+    new THREE.CapsuleGeometry(0.072, 0.24, 8, 16),
+    shellMaterial
   );
-  upperArm.position.y = -0.34;
+  upperArm.position.y = -0.26;
   pivot.add(upperArm);
 
-  const elbow = new THREE.Mesh(
-    new THREE.SphereGeometry(0.07, 10, 10),
-    trimMaterial
-  );
-  elbow.position.y = -0.67;
-  pivot.add(elbow);
-
+  // Forearm group pivots at the elbow (-0.452); dark elbow ball hides the hinge
   const forearm = new THREE.Group();
-  forearm.position.y = -0.72;
+  forearm.position.y = -0.452;
   pivot.add(forearm);
 
-  const lowerArm = new THREE.Mesh(
-    new THREE.CapsuleGeometry(0.068, 0.2, 4, 10),
-    sleeveMaterial
+  const elbow = new THREE.Mesh(
+    new THREE.SphereGeometry(0.082, 14, 12),
+    jointMaterial
   );
-  lowerArm.position.y = -0.24;
+  forearm.add(elbow);
+
+  // Forearm: R=0.066, L=0.20 → half-extent 0.166; top flush with elbow origin
+  const lowerArm = new THREE.Mesh(
+    new THREE.CapsuleGeometry(0.066, 0.20, 8, 16),
+    shellMaterial
+  );
+  lowerArm.position.y = -0.166;
   forearm.add(lowerArm);
 
-  const cuff = new THREE.Mesh(
-    new THREE.CylinderGeometry(0.06, 0.06, 0.08, 10),
-    trimMaterial
+  // Accent wrist ring, then a dark mitt overlapping the forearm bottom (-0.332)
+  const wristRing = new THREE.Mesh(
+    new THREE.TorusGeometry(0.06, 0.014, 8, 20),
+    accentMaterial
   );
-  cuff.position.y = -0.46;
-  forearm.add(cuff);
+  wristRing.rotation.x = Math.PI / 2;
+  wristRing.position.y = -0.318;
+  forearm.add(wristRing);
 
   const hand = new THREE.Mesh(
-    new THREE.SphereGeometry(0.07, 10, 10),
-    skinMaterial
+    new THREE.SphereGeometry(0.078, 14, 12),
+    jointMaterial
   );
-  hand.scale.set(0.82, 1.02, 0.72);
-  hand.position.set(0, -0.57, 0.03);
+  hand.scale.set(0.86, 1.0, 0.72);
+  hand.position.set(0, -0.392, 0.016);
   forearm.add(hand);
 
   return { pivot, forearm };
 }
 
-function buildHumanLeg(side, trouserMaterial, trimMaterial, shoeMaterial) {
+function buildRobotLeg(side, shellMaterial, jointMaterial, underMaterial, accentMaterial) {
   const pivot = new THREE.Group();
-  pivot.position.set(side * 0.18, 0.83, 0.01);
+  pivot.position.set(side * 0.16, 0.90, 0.01);
 
-  const upperLeg = new THREE.Mesh(
-    new THREE.CapsuleGeometry(0.096, 0.3, 4, 10),
-    trouserMaterial
+  // Hip ball joint at the pivot, tucked into the pelvis
+  const hip = new THREE.Mesh(
+    new THREE.SphereGeometry(0.095, 16, 14),
+    jointMaterial
   );
-  upperLeg.position.y = -0.42;
-  pivot.add(upperLeg);
+  hip.position.y = -0.02;
+  pivot.add(hip);
 
-  const knee = new THREE.Mesh(
-    new THREE.SphereGeometry(0.08, 10, 10),
-    trimMaterial
+  // Thigh: R=0.095, L=0.22 → half-extent 0.205, center -0.245 → spans -0.04..-0.45
+  const thigh = new THREE.Mesh(
+    new THREE.CapsuleGeometry(0.095, 0.22, 8, 16),
+    shellMaterial
   );
-  knee.position.y = -0.83;
-  pivot.add(knee);
+  thigh.position.y = -0.245;
+  pivot.add(thigh);
 
+  // Shin group pivots at the knee (-0.45 → global 0.45); knee ball hides the hinge
   const shin = new THREE.Group();
-  shin.position.y = -0.88;
+  shin.position.y = -0.45;
   pivot.add(shin);
 
-  const lowerLeg = new THREE.Mesh(
-    new THREE.CapsuleGeometry(0.078, 0.26, 4, 10),
-    trouserMaterial
+  const knee = new THREE.Mesh(
+    new THREE.SphereGeometry(0.088, 14, 12),
+    jointMaterial
   );
-  lowerLeg.position.y = -0.29;
+  shin.add(knee);
+
+  // Lower leg: R=0.078, L=0.17 → half-extent 0.163; top flush with knee origin.
+  // Bottom at -0.326 from knee → ankle at global 0.90 - 0.45 - 0.326 ≈ 0.124
+  const lowerLeg = new THREE.Mesh(
+    new THREE.CapsuleGeometry(0.078, 0.17, 8, 16),
+    shellMaterial
+  );
+  lowerLeg.position.y = -0.163;
   shin.add(lowerLeg);
 
+  // Ankle ball overlaps both the shin bottom and the boot — no gap at the ankle
   const ankle = new THREE.Mesh(
-    new THREE.SphereGeometry(0.06, 10, 10),
-    trimMaterial
+    new THREE.SphereGeometry(0.075, 14, 12),
+    jointMaterial
   );
-  ankle.position.y = -0.59;
+  ankle.position.set(0, -0.326, 0.0);
   shin.add(ankle);
 
-  const foot = new THREE.Mesh(
-    new THREE.BoxGeometry(0.18, 0.11, 0.38),
-    shoeMaterial
+  const ankleRing = new THREE.Mesh(
+    new THREE.TorusGeometry(0.066, 0.013, 8, 18),
+    accentMaterial
   );
-  foot.position.set(0, -0.69, 0.1);
-  foot.rotation.x = -0.05;
-  shin.add(foot);
+  ankleRing.rotation.x = Math.PI / 2;
+  ankleRing.position.set(0, -0.30, 0.0);
+  shin.add(ankleRing);
 
-  const toeCap = new THREE.Mesh(
-    new THREE.BoxGeometry(0.14, 0.05, 0.16),
-    trimMaterial
+  // Boot: rounded shell wedge whose sole sits exactly on the ground.
+  // Center -0.385, vertical half-extent ≈ 0.065 → sole at -0.45 → global 0.0 ✓
+  const boot = new THREE.Mesh(
+    new THREE.SphereGeometry(0.098, 18, 14),
+    underMaterial
   );
-  toeCap.position.set(0, -0.68, 0.18);
-  shin.add(toeCap);
+  boot.scale.set(1.12, 0.66, 1.62);
+  boot.position.set(0, -0.385, 0.055);
+  shin.add(boot);
+
+  const bootCap = new THREE.Mesh(
+    new THREE.SphereGeometry(0.075, 14, 12),
+    shellMaterial
+  );
+  bootCap.scale.set(1.15, 0.62, 1.1);
+  bootCap.position.set(0, -0.378, 0.155);
+  shin.add(bootCap);
 
   return { pivot, shin };
 }
 
 function attachEvents() {
   window.addEventListener("resize", handleResize);
+  if (nightButton) {
+    nightButton.addEventListener("click", toggleNight);
+  }
   document.addEventListener("pointerlockchange", handlePointerLockChange);
   document.addEventListener("mousemove", handleMouseMove);
 
@@ -1660,6 +2213,9 @@ function attachEvents() {
       if (focusResidentChat()) {
         event.preventDefault();
       }
+    }
+    if (event.code === "KeyN" && !event.repeat) {
+      toggleNight();
     }
     if (event.code === "KeyO" && !event.repeat) {
       if (openResidentInfo(getPriorityResidentId(), { releasePointer: true })) {
@@ -1907,11 +2463,14 @@ function animate() {
   state.currentTime += dt;
 
   updatePlayer(dt);
+  updateEnvironment(dt);
   updateSkyBackdrop();
   updateResidents(dt);
+  updateEmotes();
   updateNearbyResident();
   updateInspector();
   updateOverlayPositions();
+  updateMinimap();
 
   renderer.render(scene, camera);
 }
@@ -2037,60 +2596,128 @@ function resolveWorldCollisions(position) {
   });
 }
 
+// Rotates current toward target along the shortest arc — lerping raw angles
+// spins the long way around whenever the difference crosses ±PI.
+function lerpAngle(current, target, factor) {
+  const delta = Math.atan2(Math.sin(target - current), Math.cos(target - current));
+  return current + delta * Math.min(1, factor);
+}
+
 function updateResidents(dt) {
   npcMap.forEach((resident) => {
-    resident.wanderDelay -= dt;
-    if (resident.wanderDelay <= 0) {
-      resident.wanderDelay = 3 + Math.random() * 4;
-      resident.wanderTarget.set(
-        resident.home.x + (Math.random() - 0.5) * 2.8,
-        0,
-        resident.home.z + (Math.random() - 0.5) * 2.8
-      );
+    // Engaged residents (waving, nearby, or selected) stop wandering and
+    // square their whole body toward the player instead of just the head.
+    const engaged =
+      state.currentTime < resident.waveUntil ||
+      resident.expert.id === state.nearbyId ||
+      resident.expert.id === state.selectedId;
+
+    let moving = 0;
+    if (engaged) {
+      resident.wanderTarget.copy(resident.group.position);
+      tempVector.copy(state.player.position).sub(resident.group.position);
+      if (tempVector.lengthSq() > 0.0001) {
+        resident.group.rotation.y = lerpAngle(
+          resident.group.rotation.y,
+          Math.atan2(tempVector.x, tempVector.z),
+          dt * 7
+        );
+      }
+    } else {
+      resident.wanderDelay -= dt;
+      if (resident.wanderDelay <= 0) {
+        resident.wanderDelay = 3 + Math.random() * 4;
+        resident.wanderTarget.set(
+          resident.home.x + (Math.random() - 0.5) * 2.8,
+          0,
+          resident.home.z + (Math.random() - 0.5) * 2.8
+        );
+      }
+
+      tempVector.copy(resident.wanderTarget).sub(resident.group.position);
+      const distance = tempVector.length();
+      if (distance > 0.2) {
+        tempVector.normalize();
+        resident.group.position.addScaledVector(tempVector, dt * 0.72);
+        resident.group.rotation.y = lerpAngle(
+          resident.group.rotation.y,
+          Math.atan2(tempVector.x, tempVector.z),
+          dt * 4
+        );
+        moving = 1;
+      }
+    }
+    // Each NPC walks at a slightly different cadence driven by their personality
+    const walkRate = moving ? (5.6 + resident.personality * 2.6) : 0;
+    resident.walkCycle += dt * walkRate;
+
+    const phase = resident.walkCycle;
+    const t = state.currentTime;
+    const p = resident.personality;
+
+    // ── WALKING: proper counter-rotation gait ──────────────────────────────
+    // Right leg forward → left arm forward (crossed counter-swing)
+    const rightLegSwing = Math.sin(phase) * moving;
+    const leftLegSwing  = Math.sin(phase + Math.PI) * moving;
+    const swingAmp = 0.28 + p * 0.18;
+    // Arms counter-swing to the OPPOSITE leg
+    const rightArmTarget = Math.sin(phase + Math.PI) * swingAmp * moving;
+    const leftArmTarget  = Math.sin(phase)           * swingAmp * moving;
+
+    // Forearm bends more on the backswing for a natural elbow fold
+    const leftForearmBend  = 0.16 + Math.max(0,  leftArmTarget) * 0.34;
+    const rightForearmBend = 0.16 + Math.max(0, rightArmTarget) * 0.34;
+    // Shin kicks back as foot pushes off
+    const leftShinBend  = Math.max(0, -leftLegSwing)  * 0.60;
+    const rightShinBend = Math.max(0, -rightLegSwing) * 0.60;
+
+    // Body: double-frequency bounce, lateral sway, slight forward lean
+    const walkBob  = Math.abs(Math.cos(phase)) * moving * 0.046;
+    const hipSway  = Math.sin(phase) * moving * 0.030;
+    const fwdLean  = moving * 0.068;
+    const shRotY   = Math.sin(phase) * moving * 0.044;  // shoulder twists opposite to hips
+
+    // ── IDLE: layered compound sine = never perfectly repeating ───────────
+    // Breathing lift (slow)
+    const breathY    = Math.sin(t * 0.55 + resident.idleSeed1) * (1 - moving) * 0.005;
+    // Weight shift left–right (medium speed)
+    const weightX    = Math.sin(t * 0.31 + resident.idleSeed2) * (1 - moving) * 0.024;
+    // Micro-sway forward–back (different frequency)
+    const microTiltZ = Math.sin(t * 0.22 + resident.idleSeed3) * (1 - moving) * 0.014;
+    // Gentle arm drift — each arm on its own offset so they're asynchronous
+    const leftArmDrift  = (Math.sin(t * 0.38 + resident.idleSeed1) * 0.04
+                         + Math.sin(t * 0.61 + resident.idleSeed2) * 0.02) * (1 - moving);
+    const rightArmDrift = (Math.sin(t * 0.41 + resident.idleSeed2) * 0.04
+                         + Math.sin(t * 0.57 + resident.idleSeed3) * 0.02) * (1 - moving);
+
+    // ── COMBINE ────────────────────────────────────────────────────────────
+    resident.root.position.y = walkBob + breathY;
+    resident.bodyPivot.position.x = THREE.MathUtils.lerp(resident.bodyPivot.position.x, hipSway + weightX, dt * 7);
+    resident.bodyPivot.rotation.x = THREE.MathUtils.lerp(resident.bodyPivot.rotation.x, -fwdLean, dt * 5);
+    resident.bodyPivot.rotation.z = THREE.MathUtils.lerp(resident.bodyPivot.rotation.z, moving ? -Math.sin(phase) * 0.033 : microTiltZ, dt * 7);
+    resident.bodyPivot.rotation.y = THREE.MathUtils.lerp(resident.bodyPivot.rotation.y, shRotY, dt * 5);
+
+    resident.leftArmPivot.rotation.x  = THREE.MathUtils.lerp(resident.leftArmPivot.rotation.x,  leftArmTarget  - 0.10 + leftArmDrift,  dt * 10);
+    resident.leftForearm.rotation.x   = THREE.MathUtils.lerp(resident.leftForearm.rotation.x,  leftForearmBend,  dt * 10);
+
+    // Greeting wave overrides the right arm: raise it sideways, rock the forearm.
+    // Positive Z swings the +x arm OUTWARD — negative would fold it through the body.
+    if (state.currentTime < resident.waveUntil) {
+      resident.rightArmPivot.rotation.x = THREE.MathUtils.lerp(resident.rightArmPivot.rotation.x, 0, dt * 10);
+      resident.rightArmPivot.rotation.z = THREE.MathUtils.lerp(resident.rightArmPivot.rotation.z, 2.25, dt * 9);
+      resident.rightForearm.rotation.x  = THREE.MathUtils.lerp(resident.rightForearm.rotation.x, 0.12, dt * 10);
+      resident.rightForearm.rotation.z  = Math.sin(t * 11) * 0.38;
+    } else {
+      resident.rightArmPivot.rotation.x = THREE.MathUtils.lerp(resident.rightArmPivot.rotation.x, rightArmTarget - 0.10 + rightArmDrift, dt * 10);
+      resident.rightArmPivot.rotation.z = THREE.MathUtils.lerp(resident.rightArmPivot.rotation.z, -0.09, dt * 9);
+      resident.rightForearm.rotation.x  = THREE.MathUtils.lerp(resident.rightForearm.rotation.x, rightForearmBend, dt * 10);
+      resident.rightForearm.rotation.z  = THREE.MathUtils.lerp(resident.rightForearm.rotation.z, 0, dt * 9);
     }
 
-    tempVector.copy(resident.wanderTarget).sub(resident.group.position);
-    const distance = tempVector.length();
-    if (distance > 0.2) {
-      tempVector.normalize();
-      resident.group.position.addScaledVector(tempVector, dt * 0.72);
-      resident.group.rotation.y = THREE.MathUtils.lerp(
-        resident.group.rotation.y,
-        Math.atan2(tempVector.x, tempVector.z),
-        dt * 4
-      );
-    }
-
-    const moving = distance > 0.2 ? 1 : 0;
-    resident.walkCycle += dt * (moving ? 6.8 : 1.8);
-    const stride = Math.sin(resident.walkCycle);
-    const armSwing = stride * moving * 0.5;
-    const legSwing = stride * moving * 0.5;
-    const leftForearmBend = 0.14 + Math.max(0, armSwing) * 0.18;
-    const rightForearmBend = 0.14 + Math.max(0, -armSwing) * 0.18;
-    const leftShinBend = Math.max(0, -legSwing) * 0.72;
-    const rightShinBend = Math.max(0, legSwing) * 0.72;
-    const idleLift = moving
-      ? Math.abs(Math.sin(resident.walkCycle * 2)) * 0.026
-      : Math.sin(state.currentTime * 1.4 + resident.pulseOffset) * 0.008;
-    const bodyShift = moving
-      ? Math.sin(resident.walkCycle) * 0.03
-      : Math.sin(state.currentTime * 0.8 + resident.pulseOffset) * 0.006;
-    const bodyTilt = moving ? -Math.sin(resident.walkCycle) * 0.042 : 0;
-    const bodyTurn = moving ? Math.sin(resident.walkCycle + Math.PI / 2) * 0.04 : 0;
-
-    resident.root.position.y = idleLift;
-    resident.bodyPivot.position.x = THREE.MathUtils.lerp(resident.bodyPivot.position.x, bodyShift, dt * 6);
-    resident.bodyPivot.rotation.z = THREE.MathUtils.lerp(resident.bodyPivot.rotation.z, bodyTilt, dt * 6);
-    resident.bodyPivot.rotation.y = THREE.MathUtils.lerp(resident.bodyPivot.rotation.y, bodyTurn, dt * 4.5);
-    resident.leftArmPivot.rotation.x = THREE.MathUtils.lerp(resident.leftArmPivot.rotation.x, -armSwing - 0.12, dt * 8);
-    resident.rightArmPivot.rotation.x = THREE.MathUtils.lerp(resident.rightArmPivot.rotation.x, armSwing - 0.12, dt * 8);
-    resident.leftForearm.rotation.x = THREE.MathUtils.lerp(resident.leftForearm.rotation.x, leftForearmBend, dt * 8);
-    resident.rightForearm.rotation.x = THREE.MathUtils.lerp(resident.rightForearm.rotation.x, rightForearmBend, dt * 8);
-    resident.leftLegPivot.rotation.x = THREE.MathUtils.lerp(resident.leftLegPivot.rotation.x, legSwing, dt * 8);
-    resident.rightLegPivot.rotation.x = THREE.MathUtils.lerp(resident.rightLegPivot.rotation.x, -legSwing, dt * 8);
-    resident.leftShin.rotation.x = THREE.MathUtils.lerp(resident.leftShin.rotation.x, leftShinBend, dt * 8);
-    resident.rightShin.rotation.x = THREE.MathUtils.lerp(resident.rightShin.rotation.x, rightShinBend, dt * 8);
+    resident.leftLegPivot.rotation.x  = THREE.MathUtils.lerp(resident.leftLegPivot.rotation.x,  leftLegSwing  * 0.50, dt * 11);
+    resident.rightLegPivot.rotation.x = THREE.MathUtils.lerp(resident.rightLegPivot.rotation.x, rightLegSwing * 0.50, dt * 11);
+    resident.leftShin.rotation.x      = THREE.MathUtils.lerp(resident.leftShin.rotation.x,  leftShinBend,  dt * 11);
+    resident.rightShin.rotation.x     = THREE.MathUtils.lerp(resident.rightShin.rotation.x, rightShinBend, dt * 11);
     resident.halo.rotation.z += dt * 0.11;
     resident.halo.scale.setScalar(1 + Math.sin(state.currentTime * 1.4 + resident.pulseOffset) * 0.014);
     const beaconStrength = resident.expert.id === state.selectedId ? 1 : (resident.expert.id === state.nearbyId ? 0.58 : 0);
@@ -2134,14 +2761,27 @@ function updateResidents(dt) {
       0.24
     );
     const headWeight = toPlayer.length() < 9 || resident.expert.id === state.selectedId ? 1 : 0.25;
+
+    // Layered idle head look-around — three sine waves at co-prime-ish ratios
+    // so the pattern never repeats on any human-perceptible timescale
+    const idleHeadYaw = (
+      Math.sin(t * 0.19 + resident.idleSeed1 * 3.1) * 0.22 +
+      Math.sin(t * 0.43 + resident.idleSeed2 * 1.7) * 0.12 +
+      Math.sin(t * 0.71 + resident.idleSeed3 * 2.3) * 0.06
+    ) * (1 - headWeight);
+    const idleHeadPitch = (
+      Math.sin(t * 0.27 + resident.idleSeed1 * 2.4) * 0.07 +
+      Math.sin(t * 0.53 + resident.idleSeed3 * 1.1) * 0.04
+    ) * (1 - headWeight);
+
     resident.headPivot.rotation.y = THREE.MathUtils.lerp(
       resident.headPivot.rotation.y,
-      desiredHeadYaw * headWeight,
+      desiredHeadYaw * headWeight + idleHeadYaw,
       dt * 4.6
     );
     resident.headPivot.rotation.x = THREE.MathUtils.lerp(
       resident.headPivot.rotation.x,
-      desiredHeadPitch * headWeight,
+      desiredHeadPitch * headWeight + idleHeadPitch,
       dt * 4.6
     );
   });
@@ -2162,6 +2802,12 @@ function updateNearbyResident() {
   const newNearbyId = nearest && bestDistance <= interactionRadius ? nearest.expert.id : null;
   if (newNearbyId !== state.nearbyId) {
     state.nearbyId = newNearbyId;
+    if (newNearbyId) {
+      // Greet the approaching player with a wave and a floating emote
+      const npc = npcMap.get(newNearbyId);
+      npc.waveUntil = state.currentTime + 1.9;
+      spawnEmote(npc, "👋");
+    }
     refreshResidentStates();
   }
 
@@ -2182,7 +2828,7 @@ function updateNearbyResident() {
     focusName.textContent = "Free roam";
     focusDomain.textContent = "Scan the park";
     statusPill.textContent = state.pointerLocked || isTouchDevice
-      ? "S forward, W back, A left, D right. O info, Q chat."
+      ? "W forward, S back, A left, D right. O info, Q chat."
       : "Click the scene to enter first-person mode.";
   }
 }
@@ -2198,6 +2844,7 @@ function syncSelection(id) {
     setInspectorTab("info");
     focusChatButton.disabled = true;
     focusChatButton.textContent = "Ask This Expert";
+    if (qaTitle) qaTitle.textContent = "Ask. Stream. Understand.";
     updateChatPlaceholder(null);
     updateQaGuidance(null);
     focusName.textContent = "Free roam";
@@ -2220,7 +2867,7 @@ function syncSelection(id) {
 
   inspector.classList.remove("hidden");
   focusChatButton.disabled = false;
-  focusChatButton.textContent = `Ask ${resident.name.split(" ")[0]}`;
+  focusChatButton.textContent = `Chat with ${resident.name.split(" ")[0]}`;
   focusName.textContent = resident.name;
   focusDomain.textContent = resident.domain;
   updateChatPlaceholder(resident);
@@ -2257,6 +2904,9 @@ function renderInspector(expert) {
   inspectorDomain.textContent = expert.domain;
   inspectorName.textContent = expert.name;
   inspectorRole.textContent = expert.role;
+  if (qaTitle) {
+    qaTitle.textContent = `Ask ${expert.name.split(" ")[0]} directly`;
+  }
   inspectorDistance.textContent = `${distance.toFixed(1)} m away`;
   inspectorBio.textContent = expert.bio;
   infoSignal.textContent = expert.signal;
@@ -2385,19 +3035,6 @@ function renderConversation(expertId) {
   });
 
   conversationFeed.scrollTop = conversationFeed.scrollHeight;
-}
-
-function pushChat(expertId, role, text) {
-  const history = state.chatHistory.get(expertId) ?? [];
-  const expert = npcMap.get(expertId)?.expert ?? null;
-  const formattedText = role === "expert" && expert
-    ? `${expert.name}: ${finalizeExpertAnswer(stripSpeakerPrefix(text), expert)}`
-    : text;
-  history.push({ role, text: formattedText });
-  state.chatHistory.set(expertId, trimConversationHistory(history));
-  if (state.selectedId === expertId) {
-    renderConversation(expertId);
-  }
 }
 
 function trimConversationHistory(history) {

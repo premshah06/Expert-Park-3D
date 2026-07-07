@@ -8,8 +8,17 @@
   </div>
 
   <div class="menu-bar panel">
-    <button id="menu-overview" class="menu-button" type="button">Overview</button>
-    <button id="menu-residents" class="menu-button" type="button">Residents</button>
-    <button id="menu-stack" class="menu-button" type="button">Stack</button>
+    <button id="menu-overview" class="menu-button" type="button" title="Overview [I]">
+      <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="display:inline-block;vertical-align:-1px;margin-right:5px;"><rect x="1" y="1" width="6" height="6" rx="1.5"/><rect x="9" y="1" width="6" height="6" rx="1.5"/><rect x="1" y="9" width="6" height="6" rx="1.5"/><rect x="9" y="9" width="6" height="6" rx="1.5"/></svg>Overview
+    </button>
+    <button id="menu-residents" class="menu-button" type="button" title="Residents [R]">
+      <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="display:inline-block;vertical-align:-1px;margin-right:5px;"><circle cx="8" cy="6" r="3"/><circle cx="8" cy="8" r="7"/></svg>Residents
+    </button>
+    <button id="menu-stack" class="menu-button" type="button" title="Tech Stack">
+      <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="display:inline-block;vertical-align:-1px;margin-right:5px;"><polyline points="1,5 8,1 15,5"/><polyline points="1,8 8,4 15,8"/><polyline points="1,11 8,7 15,11"/><polyline points="1,14 8,10 15,14"/></svg>Stack
+    </button>
+    <button id="menu-night" class="menu-button" type="button" title="Toggle day / night [N]" aria-pressed="false">
+      <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="display:inline-block;vertical-align:-1px;margin-right:5px;"><path d="M13.5 9.5A6 6 0 0 1 6.5 2.5a6 6 0 1 0 7 7z"/></svg>Night
+    </button>
   </div>
 </div>

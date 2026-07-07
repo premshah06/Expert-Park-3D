@@ -1,3 +1,4 @@
+import Anthropic from "@anthropic-ai/sdk";
 import { createReadStream, existsSync, readFileSync, statSync } from "node:fs";
 import http from "node:http";
 import path from "node:path";
@@ -15,9 +16,25 @@ loadEnvFile(path.join(rootDir, ".env"));
 loadEnvFile(path.join(rootDir, ".env.local"));
 
 const port = Number(process.env.PORT || 4173);
-const openAiModel = process.env.OPENAI_MODEL || "gpt-4o-mini";
+const claudeKey = process.env.ANTHROPIC_API_KEY || "";
+const claudeModel = process.env.CLAUDE_MODEL || "claude-sonnet-4-6";
 const openAiKey = process.env.OPENAI_API_KEY || "";
+const openAiModel = process.env.OPENAI_MODEL || "gpt-4o-mini";
 const openAiBaseUrl = process.env.OPENAI_BASE_URL || "https://api.openai.com/v1";
+
+const anthropic = claudeKey ? new Anthropic({ apiKey: claudeKey }) : null;
+
+function getMode() {
+  if (claudeKey) return "claude";
+  if (openAiKey) return "openai";
+  return "local";
+}
+
+function getActiveModel() {
+  if (claudeKey) return claudeModel;
+  if (openAiKey) return openAiModel;
+  return null;
+}
 
 const mimeTypes = new Map([
   [".html", "text/html; charset=utf-8"],
@@ -28,7 +45,8 @@ const mimeTypes = new Map([
   [".jpg", "image/jpeg"],
   [".jpeg", "image/jpeg"],
   [".svg", "image/svg+xml"],
-  [".ico", "image/x-icon"]
+  [".ico", "image/x-icon"],
+  [".mp4", "video/mp4"]
 ]);
 
 const server = http.createServer(async (request, response) => {
@@ -37,9 +55,14 @@ const server = http.createServer(async (request, response) => {
 
     if (url.pathname === "/api/config" && request.method === "GET") {
       return sendJson(response, 200, {
-        mode: openAiKey ? "openai" : "local",
-        model: openAiKey ? openAiModel : null
+        mode: getMode(),
+        model: getActiveModel()
       });
+    }
+
+    if (url.pathname === "/api/chat-stream" && request.method === "POST") {
+      const body = await readJsonBody(request);
+      return handleChatStream(body, response);
     }
 
     if (url.pathname === "/api/chat" && request.method === "POST") {
@@ -61,9 +84,10 @@ const server = http.createServer(async (request, response) => {
 
 server.listen(port, "127.0.0.1", () => {
   console.log(`Expert Park server running on http://127.0.0.1:${port}`);
+  console.log(`Mode: ${getMode()} · Model: ${getActiveModel() ?? "none"}`);
 });
 
-async function handleChat(body, response) {
+async function handleChatStream(body, response) {
   const expert = experts.find((item) => item.id === body?.expertId);
   const question = typeof body?.question === "string" ? body.question.trim() : "";
   const history = Array.isArray(body?.history) ? body.history : [];
@@ -71,52 +95,205 @@ async function handleChat(body, response) {
   if (!expert) {
     return sendJson(response, 404, { error: "Expert not found." });
   }
-
   if (!question) {
     return sendJson(response, 400, { error: "Question is required." });
   }
 
+  const mode = getMode();
+
+  if (!isQuestionInScope(expert, question) && !isLikelyFollowUp(question, history)) {
+    const answer = buildOutOfScopeAnswer(expert);
+    response.writeHead(200, sseHeaders());
+    response.write(sseEvent({ type: "done", answer, model: getActiveModel(), mode }));
+    response.end();
+    return;
+  }
+
+  if (mode === "local") {
+    response.writeHead(200, sseHeaders());
+    response.write(sseEvent({ type: "done", answer: buildOutOfScopeAnswer(expert), model: null, mode: "local" }));
+    response.end();
+    return;
+  }
+
+  if (mode === "claude" && anthropic) {
+    await streamClaude(expert, question, history, response);
+    return;
+  }
+
+  if (mode === "openai" && openAiKey) {
+    await streamOpenAi(expert, question, history, response);
+    return;
+  }
+
+  return sendJson(response, 503, { error: "No AI provider configured. Add ANTHROPIC_API_KEY or OPENAI_API_KEY to .env." });
+}
+
+async function streamClaude(expert, question, history, response) {
+  const systemPrompt = buildPersonaPrompt(expert);
+  const userPrompt = buildUserPromptWithMemory(expert, question, normalizeHistory(history));
+
+  response.writeHead(200, sseHeaders());
+
+  let fullText = "";
+  try {
+    const stream = anthropic.messages.stream({
+      model: claudeModel,
+      max_tokens: 420,
+      system: systemPrompt,
+      messages: [{ role: "user", content: userPrompt }]
+    });
+
+    for await (const event of stream) {
+      if (event.type === "content_block_delta" && event.delta.type === "text_delta") {
+        const text = event.delta.text;
+        fullText += text;
+        response.write(sseEvent({ type: "chunk", text }));
+      }
+    }
+  } catch (error) {
+    response.write(sseEvent({ type: "error", message: error instanceof Error ? error.message : "Claude stream error" }));
+    response.end();
+    return;
+  }
+
+  const answer = finalizeExpertAnswer(fullText, expert);
+  response.write(sseEvent({ type: "done", answer, model: claudeModel, mode: "claude" }));
+  response.end();
+}
+
+async function streamOpenAi(expert, question, history, response) {
+  const normalized = normalizeHistory(history);
+  const messages = [
+    { role: "system", content: buildPersonaPrompt(expert) },
+    ...normalized.map((entry) => ({
+      role: entry.role === "user" ? "user" : "assistant",
+      content: entry.text
+    })),
+    { role: "user", content: buildUserPromptWithMemory(expert, question, []) }
+  ];
+
+  let apiResponse;
+  try {
+    apiResponse = await fetch(`${openAiBaseUrl}/chat/completions`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${openAiKey}`
+      },
+      body: JSON.stringify({ model: openAiModel, messages, max_tokens: 420, stream: true })
+    });
+  } catch (error) {
+    return sendJson(response, 502, { error: "Failed to reach OpenAI." });
+  }
+
+  if (!apiResponse.ok) {
+    const payload = await apiResponse.json().catch(() => ({}));
+    return sendJson(response, apiResponse.status, { error: payload?.error?.message || "OpenAI request failed." });
+  }
+
+  response.writeHead(200, sseHeaders());
+
+  let fullText = "";
+  const reader = apiResponse.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop() ?? "";
+
+      for (const line of lines) {
+        if (!line.startsWith("data: ")) continue;
+        const json = line.slice(6).trim();
+        if (json === "[DONE]") continue;
+        try {
+          const event = JSON.parse(json);
+          const text = event.choices?.[0]?.delta?.content ?? "";
+          if (text) {
+            fullText += text;
+            response.write(sseEvent({ type: "chunk", text }));
+          }
+        } catch {
+          // ignore malformed chunk
+        }
+      }
+    }
+  } catch {
+    // stream ended or client disconnected
+  }
+
+  const answer = finalizeExpertAnswer(fullText, expert);
+  response.write(sseEvent({ type: "done", answer, model: openAiModel, mode: "openai" }));
+  response.end();
+}
+
+async function handleChat(body, response) {
+  const expert = experts.find((item) => item.id === body?.expertId);
+  const question = typeof body?.question === "string" ? body.question.trim() : "";
+  const history = Array.isArray(body?.history) ? body.history : [];
+
+  if (!expert) return sendJson(response, 404, { error: "Expert not found." });
+  if (!question) return sendJson(response, 400, { error: "Question is required." });
+
   if (!isQuestionInScope(expert, question) && !isLikelyFollowUp(question, history)) {
     return sendJson(response, 200, {
       answer: buildOutOfScopeAnswer(expert),
-      model: openAiKey ? openAiModel : null,
-      mode: openAiKey ? "openai" : "local"
+      model: getActiveModel(),
+      mode: getMode()
     });
   }
 
-  if (!openAiKey) {
-    return sendJson(response, 503, {
-      error: "OPENAI_API_KEY is not configured. Add it to .env or .env.local."
-    });
+  if (!openAiKey && !claudeKey) {
+    return sendJson(response, 503, { error: "No AI provider configured." });
   }
 
-  const apiResponse = await fetch(`${openAiBaseUrl}/responses`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${openAiKey}`
-    },
-    body: JSON.stringify({
+  if (claudeKey && anthropic) {
+    try {
+      const message = await anthropic.messages.create({
+        model: claudeModel,
+        max_tokens: 420,
+        system: buildPersonaPrompt(expert),
+        messages: [{ role: "user", content: buildUserPromptWithMemory(expert, question, normalizeHistory(history)) }]
+      });
+      const rawText = message.content?.[0]?.text ?? "";
+      return sendJson(response, 200, {
+        answer: finalizeExpertAnswer(rawText, expert),
+        model: claudeModel,
+        mode: "claude"
+      });
+    } catch (error) {
+      return sendJson(response, 500, { error: error instanceof Error ? error.message : "Claude error." });
+    }
+  }
+
+  try {
+    const apiResponse = await fetch(`${openAiBaseUrl}/responses`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${openAiKey}` },
+      body: JSON.stringify({
+        model: openAiModel,
+        instructions: buildPersonaPrompt(expert),
+        input: buildUserPromptWithMemory(expert, question, normalizeHistory(history)),
+        max_output_tokens: 420
+      })
+    });
+    const payload = await apiResponse.json();
+    if (!apiResponse.ok) {
+      return sendJson(response, apiResponse.status, { error: payload?.error?.message || "OpenAI request failed." });
+    }
+    return sendJson(response, 200, {
+      answer: finalizeExpertAnswer(extractOutputText(payload), expert),
       model: openAiModel,
-      instructions: buildPersonaPrompt(expert),
-      input: buildUserPromptWithMemory(expert, question, normalizeHistory(history)),
-      max_output_tokens: 220
-    })
-  });
-
-  const payload = await apiResponse.json();
-  if (!apiResponse.ok) {
-    const errorMessage =
-      payload?.error?.message || payload?.error || "OpenAI request failed.";
-    return sendJson(response, apiResponse.status, { error: errorMessage });
+      mode: "openai"
+    });
+  } catch (error) {
+    return sendJson(response, 500, { error: error instanceof Error ? error.message : "OpenAI error." });
   }
-
-  const answer = finalizeExpertAnswer(extractOutputText(payload), expert);
-  return sendJson(response, 200, {
-    answer: answer || "No answer text returned by the model.",
-    model: openAiModel,
-    mode: "openai"
-  });
 }
 
 async function serveStatic(urlPath, response, isHeadRequest) {
@@ -130,129 +307,84 @@ async function serveStatic(urlPath, response, isHeadRequest) {
   }
 
   let filePath = path.join(rootDir, safePath);
-
-  if (!filePath.startsWith(rootDir)) {
-    return sendJson(response, 403, { error: "Forbidden." });
-  }
-
-  if (existsSync(filePath) && statSync(filePath).isDirectory()) {
-    filePath = path.join(filePath, "index.html");
-  }
-
-  if (!existsSync(filePath)) {
-    return sendJson(response, 404, { error: "File not found." });
-  }
+  if (!filePath.startsWith(rootDir)) return sendJson(response, 403, { error: "Forbidden." });
+  if (existsSync(filePath) && statSync(filePath).isDirectory()) filePath = path.join(filePath, "index.html");
+  if (!existsSync(filePath)) return sendJson(response, 404, { error: "File not found." });
 
   const extension = path.extname(filePath).toLowerCase();
   if (extension === ".html") {
     const html = renderHtmlWithIncludes(filePath);
-    response.writeHead(200, {
-      "Content-Type": "text/html; charset=utf-8"
-    });
-
-    if (isHeadRequest) {
-      response.end();
-      return;
-    }
-
+    response.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+    if (isHeadRequest) { response.end(); return; }
     response.end(html);
     return;
   }
 
-  response.writeHead(200, {
-    "Content-Type": mimeTypes.get(extension) || "application/octet-stream"
-  });
-
-  if (isHeadRequest) {
-    response.end();
-    return;
-  }
-
+  response.writeHead(200, { "Content-Type": mimeTypes.get(extension) || "application/octet-stream" });
+  if (isHeadRequest) { response.end(); return; }
   createReadStream(filePath).pipe(response);
 }
 
+function sseHeaders() {
+  return {
+    "Content-Type": "text/event-stream; charset=utf-8",
+    "Cache-Control": "no-cache",
+    "Connection": "keep-alive",
+    "X-Accel-Buffering": "no"
+  };
+}
+
+function sseEvent(payload) {
+  return `data: ${JSON.stringify(payload)}\n\n`;
+}
+
 function sendJson(response, statusCode, body) {
-  response.writeHead(statusCode, {
-    "Content-Type": "application/json; charset=utf-8"
-  });
+  response.writeHead(statusCode, { "Content-Type": "application/json; charset=utf-8" });
   response.end(JSON.stringify(body));
 }
 
 async function readJsonBody(request) {
   const chunks = [];
-  for await (const chunk of request) {
-    chunks.push(chunk);
-  }
-
-  if (!chunks.length) {
-    return {};
-  }
-
+  for await (const chunk of request) chunks.push(chunk);
+  if (!chunks.length) return {};
   return JSON.parse(Buffer.concat(chunks).toString("utf8"));
 }
 
 function loadEnvFile(filePath) {
-  if (!existsSync(filePath)) {
-    return;
-  }
-
+  if (!existsSync(filePath)) return;
   const raw = readFileSync(filePath, "utf8");
   raw.split(/\r?\n/).forEach((line) => {
     const trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith("#")) {
-      return;
-    }
-
+    if (!trimmed || trimmed.startsWith("#")) return;
     const separatorIndex = trimmed.indexOf("=");
-    if (separatorIndex === -1) {
-      return;
-    }
-
+    if (separatorIndex === -1) return;
     const key = trimmed.slice(0, separatorIndex).trim();
     let value = trimmed.slice(separatorIndex + 1).trim();
-
     if ((value.startsWith("\"") && value.endsWith("\"")) || (value.startsWith("'") && value.endsWith("'"))) {
       value = value.slice(1, -1);
     }
-
     process.env[key] = value;
   });
 }
 
 function extractOutputText(payload) {
-  if (typeof payload?.output_text === "string" && payload.output_text.trim()) {
-    return payload.output_text.trim();
-  }
-
-  if (!Array.isArray(payload?.output)) {
-    return "";
-  }
-
+  if (typeof payload?.output_text === "string" && payload.output_text.trim()) return payload.output_text.trim();
+  if (!Array.isArray(payload?.output)) return "";
   const parts = [];
   payload.output.forEach((item) => {
-    if (!Array.isArray(item?.content)) {
-      return;
-    }
-
+    if (!Array.isArray(item?.content)) return;
     item.content.forEach((contentItem) => {
-      if (typeof contentItem?.text === "string") {
-        parts.push(contentItem.text);
-      }
+      if (typeof contentItem?.text === "string") parts.push(contentItem.text);
     });
   });
-
   return parts.join("\n").trim();
 }
 
 function renderHtmlWithIncludes(filePath, seen = new Set()) {
-  if (seen.has(filePath)) {
-    throw new Error(`Circular HTML include detected for ${filePath}`);
-  }
-
+  if (seen.has(filePath)) throw new Error(`Circular HTML include detected for ${filePath}`);
   const nextSeen = new Set(seen);
   nextSeen.add(filePath);
   const source = readFileSync(filePath, "utf8");
-
   return source.replace(/<!--\s*include:\s*([^\s]+)\s*-->/g, (_, includePath) => {
     const resolvedPath = path.resolve(path.dirname(filePath), includePath);
     if (!resolvedPath.startsWith(rootDir) || !existsSync(resolvedPath)) {
@@ -265,20 +397,12 @@ function renderHtmlWithIncludes(filePath, seen = new Set()) {
 function normalizeHistory(history) {
   return history
     .filter((entry) => entry && (entry.role === "user" || entry.role === "expert"))
-    .map((entry) => ({
-      role: entry.role,
-      text: String(entry.text || "").trim()
-    }))
+    .map((entry) => ({ role: entry.role, text: String(entry.text || "").trim() }))
     .filter((entry) => entry.text)
     .slice(-6);
 }
 
 function isLikelyFollowUp(question, history) {
-  if (!history.length) {
-    return false;
-  }
-
-  return /^(and|also|what about|how about|then|so|now|okay|can you|could you|why|tell me more|expand|go deeper)/i.test(
-    question.trim()
-  );
+  if (!history.length) return false;
+  return /^(and|also|what about|how about|then|so|now|okay|can you|could you|why|tell me more|expand|go deeper)/i.test(question.trim());
 }

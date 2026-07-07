@@ -2,6 +2,7 @@ export const experts = [
   {
     id: "zv",
     name: "ZV-9",
+    attire: "visionary",
     role: "AI Systems Architect",
     domain: "Agents and Knowledge Systems",
     signal: "AI",
@@ -75,6 +76,7 @@ export const experts = [
   {
     id: "kl",
     name: "KL-7",
+    attire: "designer",
     role: "Spatial UX Designer",
     domain: "Immersive Interface Design",
     signal: "UX",
@@ -148,6 +150,7 @@ export const experts = [
   {
     id: "tq",
     name: "TQ-4",
+    attire: "racer",
     role: "Motion Physics Engineer",
     domain: "Camera and Movement Systems",
     signal: "Motion",
@@ -221,6 +224,7 @@ export const experts = [
   {
     id: "sn",
     name: "SN-2",
+    attire: "host",
     role: "Community Experience Lead",
     domain: "Social Interaction Design",
     signal: "Social",
@@ -294,6 +298,7 @@ export const experts = [
   {
     id: "vx",
     name: "VX-5",
+    attire: "mentor",
     role: "Knowledge Design Mentor",
     domain: "Domain Prompt Engineering",
     signal: "Prompt",
@@ -367,6 +372,7 @@ export const experts = [
   {
     id: "cl",
     name: "CL-1",
+    attire: "builder",
     role: "Rapid Prototype Builder",
     domain: "Product Engineering",
     signal: "Build",

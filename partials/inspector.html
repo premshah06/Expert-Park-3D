@@ -15,15 +15,14 @@
     </div>
   </div>
 
-  <p id="inspector-bio" class="inspector-bio">
-    Step close to any resident, press O for the profile, and press Q when you
-    want to ask a question.
-  </p>
+  <div class="bio-card">
+    <p id="inspector-bio" class="inspector-bio">
+      Step close to any resident, press O for the profile, and press Q when you
+      want to ask a question.
+    </p>
+  </div>
 
   <div class="profile-actions">
-    <button id="focus-chat-button" class="ghost-button" type="button">
-      Ask This Expert
-    </button>
     <div class="inline-shortcuts" aria-label="Resident shortcuts">
       <span class="shortcut-chip compact"><kbd>Q</kbd><span>Ask</span></span>
       <span class="shortcut-chip compact"><kbd>O</kbd><span>Info</span></span>
@@ -122,16 +121,19 @@
     <div class="qa-shell">
       <div class="qa-hero">
         <div class="qa-copy">
-          <span class="qa-kicker">Integrated Expert Chat</span>
-          <h3 class="qa-title">Ask clearly. Get an answer fast.</h3>
+          <span class="qa-kicker">Expert Intelligence</span>
+          <h3 id="qa-title" class="qa-title">Ask. Stream. Understand.</h3>
           <p id="qa-guidance" class="qa-guidance">
             Use a starter question or write a direct question below.
           </p>
         </div>
         <div class="qa-status-row">
-          <span id="runtime-status" class="runtime-pill">Integrated local prototype</span>
+          <span id="runtime-status" class="runtime-pill">Local mode</span>
           <span class="memory-pill">Short memory</span>
         </div>
+        <button id="focus-chat-button" class="qa-cta-btn" type="button" disabled>
+          Ask This Expert
+        </button>
       </div>
 
       <div class="section-block qa-starters">
@@ -158,8 +160,11 @@
             autocomplete="off"
           ></textarea>
           <div class="chat-form-footer">
-            <span class="chat-tip">Press Enter to send. Shift + Enter for a new line.</span>
-            <button type="submit">Send question</button>
+            <span class="chat-tip">Enter to send · Shift+Enter for new line</span>
+            <button type="submit" id="send-button">
+              <span class="send-label">Send</span>
+              <span class="send-spinner" aria-hidden="true"></span>
+            </button>
           </div>
         </form>
       </div>
